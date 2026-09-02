@@ -1,0 +1,3 @@
+{"timestamp":"2026-01-02T03:04:05Z","type":"session_meta","payload":{"id":"session-001","cli_version":"0.1.0"}}
+{"timestamp":"2026-01-02T03:04:06Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"call-001","input":"{\"cmd\":\"pwd\"}"}}
+{"timestamp":"2026-01-02T03:04:07Z","type":"event_msg","payload":{"type":"ItemCompleted","item":{"type":"CommandExecution","id":"item-001","status":"completed"}}}

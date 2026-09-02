@@ -1,0 +1,6 @@
+{"timestamp":"2026-01-05T03:04:05Z","type":"event_msg","payload":{"type":"ItemCompleted","item":{"type":"McpToolCall","server":"demo-server","tool":"lookup","id":"item-101","status":"completed","output":"anonymous output"}}}
+{"timestamp":"2026-01-05T03:04:06Z","type":"event_msg","payload":{"type":"ItemCompleted","item":{"type":"FileChange","path":"/workspace/demo/file.txt","id":"item-102","status":"failed"}}}
+{"timestamp":"2026-01-05T03:04:07Z","type":"event_msg","payload":{"type":"ItemCompleted","item":{"type":"WebSearch","id":"item-103","status":"completed"}}}
+{"timestamp":"2026-01-05T03:04:08Z","type":"event_msg","payload":{"type":"ItemCompleted","item":{"type":"ImageView","id":"item-104","status":"completed"}}}
+{"timestamp":"2026-01-05T03:04:09Z","type":"event_msg","payload":{"type":"ItemCompleted","item":{"type":"ImageGeneration","id":"item-105","status":"completed"}}}
+{"timestamp":"2026-01-05T03:04:10Z","type":"event_msg","payload":{"type":"ItemCompleted","item":{"type":"CollabAgentToolCall","tool":"delegate","id":"item-106","status":"completed"}}}

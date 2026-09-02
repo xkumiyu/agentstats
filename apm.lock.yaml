@@ -1,0 +1,267 @@
+lockfile_version: '1'
+generated_at: '2026-09-01T14:57:34.961748+00:00'
+apm_version: 0.28.0
+dependencies:
+- repo_url: fission-ai/openspec
+  materialization_repo_url: Fission-AI/OpenSpec
+  name: OpenSpec
+  host: github.com
+  resolved_commit: d0071d7326689a0269332a500c8f56b3f2218ba9
+  version: unknown
+  package_type: skill_bundle
+  deployed_files:
+  - .agents/skills/openspec-apply-change
+  - .agents/skills/openspec-apply-change/SKILL.md
+  - .agents/skills/openspec-archive-change
+  - .agents/skills/openspec-archive-change/SKILL.md
+  - .agents/skills/openspec-bulk-archive-change
+  - .agents/skills/openspec-bulk-archive-change/SKILL.md
+  - .agents/skills/openspec-continue-change
+  - .agents/skills/openspec-continue-change/SKILL.md
+  - .agents/skills/openspec-explore
+  - .agents/skills/openspec-explore/SKILL.md
+  - .agents/skills/openspec-ff-change
+  - .agents/skills/openspec-ff-change/SKILL.md
+  - .agents/skills/openspec-new-change
+  - .agents/skills/openspec-new-change/SKILL.md
+  - .agents/skills/openspec-onboard
+  - .agents/skills/openspec-onboard/SKILL.md
+  - .agents/skills/openspec-propose
+  - .agents/skills/openspec-propose/SKILL.md
+  - .agents/skills/openspec-sync-specs
+  - .agents/skills/openspec-sync-specs/SKILL.md
+  - .agents/skills/openspec-update-change
+  - .agents/skills/openspec-update-change/SKILL.md
+  - .agents/skills/openspec-verify-change
+  - .agents/skills/openspec-verify-change/SKILL.md
+  deployed_file_hashes:
+    .agents/skills/openspec-apply-change/SKILL.md: sha256:0cf1cb26935b55d83e240631500c8cee484a7b241c84a705387c0eeb88676ccf
+    .agents/skills/openspec-archive-change/SKILL.md: sha256:3ad0def4d299469fdfd5b05e4842284d65558e6b28710b5962f7f214d6153855
+    .agents/skills/openspec-bulk-archive-change/SKILL.md: sha256:2d962cb0e4e03ef8fc579d79c6444be64833bc2eac27c990ff1ad5d972297db5
+    .agents/skills/openspec-continue-change/SKILL.md: sha256:5120ec867288e4a117949e333f980f51df79e641739c9f4a23df6656311af920
+    .agents/skills/openspec-explore/SKILL.md: sha256:dbf0576f56e82b31191fbd803ee8ecbebe92da30e3209d5f77fc2e14d7091654
+    .agents/skills/openspec-ff-change/SKILL.md: sha256:457be39012799e11581e43185b679c54a50182f3a58453d17c5444a24ab53926
+    .agents/skills/openspec-new-change/SKILL.md: sha256:0752814373e90dc368eb1f4c7fd4b15c3df1b26fa2d6a0e99232b15a29fe4f22
+    .agents/skills/openspec-onboard/SKILL.md: sha256:9add352e1582a7c80213006ef2d0acf188583541a931c209feb09d43ec6bb805
+    .agents/skills/openspec-propose/SKILL.md: sha256:c0537ce311115878e7e0a04e6ff4fc6456056f21024079c228b6b24325e38613
+    .agents/skills/openspec-sync-specs/SKILL.md: sha256:daf0e52b188a3010e1f494427eb6807fb61a68df653403759b2be54a3aa37e74
+    .agents/skills/openspec-update-change/SKILL.md: sha256:f9e08302d75e873e9ca801211e6151e3f9b663ac6205903e7d79b6520cea30f5
+    .agents/skills/openspec-verify-change/SKILL.md: sha256:02a810d3fb265df77ec22891cef25f0510fe0f07b608d837ba361debced81840
+  content_hash: sha256:8947f8dcb57fb12919cd4bb36defa0341c386b53d7fe6484bd95f3bd2fb4f958
+deployments:
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-apply-change
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: null
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-apply-change/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: sha256:0cf1cb26935b55d83e240631500c8cee484a7b241c84a705387c0eeb88676ccf
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-archive-change
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: null
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-archive-change/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: sha256:3ad0def4d299469fdfd5b05e4842284d65558e6b28710b5962f7f214d6153855
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-bulk-archive-change
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: null
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-bulk-archive-change/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: sha256:2d962cb0e4e03ef8fc579d79c6444be64833bc2eac27c990ff1ad5d972297db5
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-continue-change
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: null
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-continue-change/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: sha256:5120ec867288e4a117949e333f980f51df79e641739c9f4a23df6656311af920
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-explore
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: null
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-explore/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: sha256:dbf0576f56e82b31191fbd803ee8ecbebe92da30e3209d5f77fc2e14d7091654
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-ff-change
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: null
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-ff-change/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: sha256:457be39012799e11581e43185b679c54a50182f3a58453d17c5444a24ab53926
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-new-change
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: null
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-new-change/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: sha256:0752814373e90dc368eb1f4c7fd4b15c3df1b26fa2d6a0e99232b15a29fe4f22
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-onboard
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: null
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-onboard/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: sha256:9add352e1582a7c80213006ef2d0acf188583541a931c209feb09d43ec6bb805
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-propose
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: null
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-propose/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: sha256:c0537ce311115878e7e0a04e6ff4fc6456056f21024079c228b6b24325e38613
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-sync-specs
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: null
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-sync-specs/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: sha256:daf0e52b188a3010e1f494427eb6807fb61a68df653403759b2be54a3aa37e74
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-update-change
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: null
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-update-change/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: sha256:f9e08302d75e873e9ca801211e6151e3f9b663ac6205903e7d79b6520cea30f5
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-verify-change
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: null
+- kind: project-relative
+  target: agent-skills
+  value: .agents/skills/openspec-verify-change/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - fission-ai/openspec
+  active_owner: fission-ai/openspec
+  content_hash: sha256:02a810d3fb265df77ec22891cef25f0510fe0f07b608d837ba361debced81840

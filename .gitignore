@@ -1,0 +1,7 @@
+tmp/
+
+# APM dependencies
+apm_modules/
+
+# Local build output
+/agentstats
