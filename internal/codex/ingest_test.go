@@ -194,7 +194,7 @@ func TestLoadRecognizesSnakeCaseItemCompletedAndImplicitSkillAccess(t *testing.T
 	lines := []string{
 		`{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"s"}}`,
 		`{"timestamp":"2026-01-01T00:00:01Z","type":"task_started","payload":{"turn_id":"t"}}`,
-		`{"timestamp":"2026-01-01T00:00:02Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"i1","status":"completed","command":["/bin/zsh","-lc","cat /home/user/.agents/skills/report/SKILL.md"]}}}`,
+		`{"timestamp":"2026-01-01T00:00:02Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"i1","status":"completed","command":["/bin/zsh","-lc","cat /fixture-home/.agents/skills/report/SKILL.md"]}}}`,
 		`{"timestamp":"2026-01-01T00:00:03Z","type":"task_complete","payload":{"turn_id":"t"}}`,
 	}
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
@@ -255,8 +255,8 @@ func TestSelectedSkillInjectionStaysInPromptTurn(t *testing.T) {
 	lines := []string{
 		`{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"s"}}`,
 		`{"timestamp":"2026-01-01T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"$report"}],"internal_chat_message_metadata_passthrough":{"turn_id":"t","content_item_kinds":["user.text"]}}}`,
-		`{"timestamp":"2026-01-01T00:00:02Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"t","item":{"type":"UserMessage","content":[{"type":"text","text":"$report"},{"type":"skill","name":"report","path":"/home/user/.agents/skills/report/SKILL.md"}]}}}`,
-		`{"timestamp":"2026-01-01T00:00:03Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<skill><name>report</name><path>/home/user/.agents/skills/report/SKILL.md</path></skill>"}],"internal_chat_message_metadata_passthrough":{"turn_id":"t","content_item_kinds":["skills.selected_skill_instructions"]}}}`,
+		`{"timestamp":"2026-01-01T00:00:02Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"t","item":{"type":"UserMessage","content":[{"type":"text","text":"$report"},{"type":"skill","name":"report","path":"/fixture-home/.agents/skills/report/SKILL.md"}]}}}`,
+		`{"timestamp":"2026-01-01T00:00:03Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<skill><name>report</name><path>/fixture-home/.agents/skills/report/SKILL.md</path></skill>"}],"internal_chat_message_metadata_passthrough":{"turn_id":"t","content_item_kinds":["skills.selected_skill_instructions"]}}}`,
 		`{"timestamp":"2026-01-01T00:00:04Z","type":"task_complete","payload":{"turn_id":"t"}}`,
 	}
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {

@@ -42,7 +42,7 @@ func TestInjectedSkillCanKeepUnknownActivationMode(t *testing.T) {
 func TestDetectRuntimeSkillItems(t *testing.T) {
 	item := map[string]any{"type": "UserMessage", "content": []any{
 		map[string]any{"type": "text", "text": "$report"},
-		map[string]any{"type": "skill", "name": "report", "path": "/home/user/.agents/skills/report/SKILL.md"},
+		map[string]any{"type": "skill", "name": "report", "path": "/fixture-home/.agents/skills/report/SKILL.md"},
 	}}
 	got := DetectRuntimeSkillItems(item, "s", "t", time.Unix(1, 0), SourceRef{})
 	if len(got) != 1 || got[0].SkillName != "report" || got[0].Mode != ModeUnknown || got[0].Method != MethodRuntimeSkillItem || got[0].State != StateConfirmed {
@@ -96,24 +96,24 @@ func TestImplicitAccessAndFrontmatterFallback(t *testing.T) {
 	if evidence := DetectImplicitAccess("printf 'skills/{ctx,report}/SKILL.md'", "s", "t", time.Unix(1, 0), SourceRef{}); len(evidence) != 0 {
 		t.Fatalf("glob pattern was detected as access = %#v", evidence)
 	}
-	if got := SkillNameFromPath("/home/kumi/.codex/skills/.system/openai-docs/SKILL.md"); got != "openai-docs" {
+	if got := SkillNameFromPath("/fixture-home/.codex/skills/.system/openai-docs/SKILL.md"); got != "openai-docs" {
 		t.Fatalf("system skill name = %q", got)
 	}
-	if got := SkillNameFromPath("/home/kumi/.agents/skills/{ctx,report}/SKILL.md"); got != "" {
+	if got := SkillNameFromPath("/fixture-home/.agents/skills/{ctx,report}/SKILL.md"); got != "" {
 		t.Fatalf("glob skill name = %q", got)
 	}
-	if got := SkillNameFromPath("/home/kumi/.agents/skills/report/../other/SKILL.md"); got != "other" {
+	if got := SkillNameFromPath("/fixture-home/.agents/skills/report/../other/SKILL.md"); got != "other" {
 		t.Fatalf("cleaned skill name = %q", got)
 	}
 }
 
 func TestImplicitAccessParsesReadersShellWrappersAndScripts(t *testing.T) {
-	path := "/home/user/.agents/skills/report/SKILL.md"
+	path := "/fixture-home/.agents/skills/report/SKILL.md"
 	commands := []string{
 		"cat '" + path + "'",
 		"rtk proxy cat " + path,
 		`["/bin/zsh","-lc","sed -n '1,20p' ` + path + `"]`,
-		"python3 /home/user/.agents/skills/report/scripts/render.py",
+		"python3 /fixture-home/.agents/skills/report/scripts/render.py",
 	}
 	for _, command := range commands {
 		if got := DetectImplicitAccess(command, "s", "t", time.Unix(1, 0), SourceRef{}); len(got) != 1 || got[0].SkillName != "report" {
@@ -123,7 +123,7 @@ func TestImplicitAccessParsesReadersShellWrappersAndScripts(t *testing.T) {
 	for _, command := range []string{
 		"printf '" + path + "'",
 		"echo " + path,
-		"rg --files /home/user/.agents/skills",
+		"rg --files /fixture-home/.agents/skills",
 		"python3 -c 'print(\"" + path + "\")'",
 	} {
 		if got := DetectImplicitAccess(command, "s", "t", time.Unix(1, 0), SourceRef{}); len(got) != 0 {
@@ -132,7 +132,7 @@ func TestImplicitAccessParsesReadersShellWrappersAndScripts(t *testing.T) {
 	}
 	for _, command := range []string{
 		"sudo -n cat " + path,
-		"bash -e /home/user/.agents/skills/report/scripts/render.sh",
+		"bash -e /fixture-home/.agents/skills/report/scripts/render.sh",
 	} {
 		if got := DetectImplicitAccess(command, "s", "t", time.Unix(1, 0), SourceRef{}); len(got) != 1 || got[0].SkillName != "report" {
 			t.Errorf("wrapped access command %q evidence = %#v", command, got)
