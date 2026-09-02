@@ -17,6 +17,10 @@ func TestDetectStructuredSkillEvidence(t *testing.T) {
 	if len(request) != 1 || request[0].SkillName != "report" || request[0].State != StateUnconfirmed {
 		t.Fatalf("request evidence = %#v", request)
 	}
+	namespaced := DetectExplicitRequest("$data-analytics:index summarize this", "s", "t", time.Unix(1, 0), source)
+	if len(namespaced) != 1 || namespaced[0].SkillName != "data-analytics:index" {
+		t.Fatalf("namespaced request evidence = %#v", namespaced)
+	}
 	if got := DetectExplicitRequest("please use $report", "s", "t", time.Unix(1, 0), source); len(got) != 0 {
 		t.Fatalf("prose was detected: %#v", got)
 	}
@@ -104,6 +108,42 @@ func TestImplicitAccessAndFrontmatterFallback(t *testing.T) {
 	}
 	if got := SkillNameFromPath("/fixture-home/.agents/skills/report/../other/SKILL.md"); got != "other" {
 		t.Fatalf("cleaned skill name = %q", got)
+	}
+}
+
+func TestSkillPathPreservesPluginNamespaceAndRejectsRootAliasSegments(t *testing.T) {
+	pluginSkill := "/fixture-home/.codex/plugins/cache/example-plugin/data-analytics/0.2.35-build/skills/index/SKILL.md"
+	if got := SkillNameFromPath(pluginSkill); got != "data-analytics:index" {
+		t.Fatalf("plugin skill name = %q", got)
+	}
+	if got := SkillNameFromPath("/fixture-home/.codex/plugins/cache/example-plugin/data-analytics/0.2.35-build/skills/index/scripts/render.py"); got != "data-analytics:index" {
+		t.Fatalf("plugin script skill name = %q", got)
+	}
+
+	for _, path := range []string{
+		"/fixture-home/.codex/skills/r0/ponytail/SKILL.md",
+		"/fixture-home/.codex/skills/r4/agent-browser/SKILL.md",
+		"/fixture-home/.codex/skills/r17/custom/SKILL.md",
+	} {
+		if got := SkillNameFromPath(path); got != "" {
+			t.Errorf("invalid root alias path %q resolved to %q", path, got)
+		}
+	}
+}
+
+func TestPluginFrontmatterKeepsNamespace(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, ".codex", "plugins", "cache", "example-plugin", "data-analytics", "0.2.35-build", "skills", "router")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(skillDir, "SKILL.md")
+	if err := os.WriteFile(path, []byte("---\nname: index\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	evidence := DetectImplicitAccess("cat "+path, "s", "t", time.Unix(1, 0), SourceRef{})
+	if len(evidence) != 1 || evidence[0].SkillName != "data-analytics:index" {
+		t.Fatalf("plugin frontmatter evidence = %#v", evidence)
 	}
 }
 

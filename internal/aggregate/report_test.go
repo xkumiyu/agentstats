@@ -68,3 +68,47 @@ func TestSkillsPreserveOverlappingModesAndUnknownActivation(t *testing.T) {
 		t.Fatalf("skill row = %#v", row)
 	}
 }
+
+func TestSkillsCountEachSkillOncePerTurn(t *testing.T) {
+	stamp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	turns := []usage.Turn{
+		{SessionID: "s", ID: "t1", SkillEvidence: []usage.SkillEvidence{
+			usage.NewSkillEvidence("s", "t1", "report", usage.ModeImplicit, usage.MethodImplicitAccess, usage.StateInferred, stamp, usage.SourceRef{}),
+			usage.NewSkillEvidence("s", "t1", "report", usage.ModeImplicit, usage.MethodImplicitAccess, usage.StateInferred, stamp.Add(time.Second), usage.SourceRef{}),
+		}},
+		{SessionID: "s", ID: "t2", SkillEvidence: []usage.SkillEvidence{
+			usage.NewSkillEvidence("s", "t2", "report", usage.ModeExplicit, usage.MethodExplicitInjected, usage.StateConfirmed, stamp.Add(2*time.Second), usage.SourceRef{}),
+		}},
+	}
+	rows := Skills(Input{Turns: turns}, false)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %#v", rows)
+	}
+	row := rows[0]
+	if row.Total != 2 || row.Implicit != 1 || row.Explicit != 1 {
+		t.Fatalf("skill count = %#v", row)
+	}
+}
+
+func TestSkillsCanGroupEachSkillOncePerSession(t *testing.T) {
+	stamp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	turns := []usage.Turn{
+		{SessionID: "s1", ID: "t1", SkillEvidence: []usage.SkillEvidence{
+			usage.NewSkillEvidence("s1", "t1", "report", usage.ModeImplicit, usage.MethodImplicitAccess, usage.StateInferred, stamp, usage.SourceRef{}),
+		}},
+		{SessionID: "s1", ID: "t2", SkillEvidence: []usage.SkillEvidence{
+			usage.NewSkillEvidence("s1", "t2", "report", usage.ModeExplicit, usage.MethodExplicitInjected, usage.StateConfirmed, stamp.Add(time.Second), usage.SourceRef{}),
+		}},
+		{SessionID: "s2", ID: "t3", SkillEvidence: []usage.SkillEvidence{
+			usage.NewSkillEvidence("s2", "t3", "report", usage.ModeUnknown, usage.MethodSelectedSkillInstructions, usage.StateConfirmed, stamp.Add(2*time.Second), usage.SourceRef{}),
+		}},
+	}
+	rows := SkillsBy(Input{Turns: turns}, false, SkillGroupBySession)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %#v", rows)
+	}
+	row := rows[0]
+	if row.Total != 2 || row.Explicit != 1 || row.Implicit != 1 || row.Unknown != 1 || row.Confirmed != 2 || row.Inferred != 0 {
+		t.Fatalf("session skill count = %#v", row)
+	}
+}

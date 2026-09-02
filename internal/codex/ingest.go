@@ -578,7 +578,12 @@ func (a *assembler) observe(cur *turnState, env Envelope, payload map[string]any
 		if obs, ok := usage.NormalizeRuntimeItem(cur.turn.SessionID, cur.turn.ID, item, env.Timestamp, env.Source); ok {
 			cur.turn.RuntimeTools = append(cur.turn.RuntimeTools, obs)
 			cur.turn.SkillEvidence = append(cur.turn.SkillEvidence, usage.DetectStructuredSkillTool(obs)...)
-			cur.turn.SkillEvidence = append(cur.turn.SkillEvidence, usage.DetectImplicitAccess(obs.Arguments, cur.turn.SessionID, cur.turn.ID, env.Timestamp, env.Source)...)
+			// A failed command records an attempted path, not evidence that the
+			// referenced skill was actually accessed. Keep the runtime observation
+			// for diagnostics, but do not infer a skill use from it.
+			if obs.Status != usage.StatusFailure {
+				cur.turn.SkillEvidence = append(cur.turn.SkillEvidence, usage.DetectImplicitAccess(obs.Arguments, cur.turn.SessionID, cur.turn.ID, env.Timestamp, env.Source)...)
+			}
 		}
 	}
 	if strings.EqualFold(firstString(payload, "type", "event_type"), "user_message") || strings.EqualFold(firstString(payload, "type", "event_type"), "user_input") || (strings.EqualFold(firstString(payload, "type", "event_type"), "message") && strings.EqualFold(firstString(payload, "role", "author"), "user")) || env.Type == "user_message" {

@@ -16,9 +16,13 @@ import (
 	"github.com/xkumiyu/agentstats/internal/codex"
 	"github.com/xkumiyu/agentstats/internal/output"
 	"github.com/xkumiyu/agentstats/internal/usage"
+	appversion "github.com/xkumiyu/agentstats/internal/version"
 )
 
-const usageText = `Usage: agentstats <command> [options]
+const usageText = `Usage:
+  agentstats <command> [options]
+  agentstats --help
+  agentstats --version
 
 Commands:
   stats     Show an overview of Codex usage
@@ -26,16 +30,79 @@ Commands:
   skills    Show skill usage and evidence state
 
 Options:
+  --help       Show this help
+  --version    Show the agentstats version
+
+Run "agentstats <command> --help" for command-specific options.
+`
+
+const statsUsageText = `Usage: agentstats stats [options]
+
+Show an overview of Codex usage.
+
+Options:
   --days N          Include the last N days (N >= 1)
   --codex-home PATH Read a specific Codex home
   --color MODE      auto, always, or never (human report only)
-  --layer LAYER     effective, runtime, or model (tools only)
-  --strict          Count confirmed skill evidence only (skills only)
+  --group-by UNIT   turn or session
   --verbose         Show input warning details
   --strict-input    Exit non-zero when input records are skipped
   --json            Emit JSON
-  --csv             Emit CSV
+  --help            Show this help
 `
+
+const toolsUsageText = `Usage: agentstats tools [options]
+
+Show tool usage by canonical name.
+
+Options:
+  --days N          Include the last N days (N >= 1)
+  --codex-home PATH Read a specific Codex home
+  --color MODE      auto, always, or never (human report only)
+  --layer LAYER     effective, runtime, or model
+  --verbose         Show input warning details
+  --strict-input    Exit non-zero when input records are skipped
+  --json            Emit JSON
+  --help            Show this help
+`
+
+const skillsUsageText = `Usage: agentstats skills [options]
+
+Show skill usage and evidence state.
+
+Options:
+  --days N          Include the last N days (N >= 1)
+  --codex-home PATH Read a specific Codex home
+  --color MODE      auto, always, or never (human report only)
+  --group-by UNIT   turn or session
+  --strict          Count confirmed skill evidence only
+  --verbose         Show input warning details
+  --strict-input    Exit non-zero when input records are skipped
+  --json            Emit JSON
+  --help            Show this help
+`
+
+func commandUsage(kind string) string {
+	switch kind {
+	case "stats":
+		return statsUsageText
+	case "tools":
+		return toolsUsageText
+	case "skills":
+		return skillsUsageText
+	default:
+		return usageText
+	}
+}
+
+func hasOption(args []string, option string) bool {
+	for _, arg := range args {
+		if arg == option || strings.HasPrefix(arg, option+"=") {
+			return true
+		}
+	}
+	return false
+}
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
@@ -46,26 +113,45 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	kind := strings.ToLower(args[0])
 	if kind == "help" || kind == "--help" || kind == "-h" {
+		if kind == "help" && len(args) > 1 {
+			requested := strings.ToLower(args[1])
+			if requested == "stats" || requested == "tools" || requested == "skills" {
+				_, _ = io.WriteString(stdout, commandUsage(requested))
+				return 0
+			}
+		}
 		_, _ = io.WriteString(stdout, usageText)
+		return 0
+	}
+	if kind == "--version" {
+		_, _ = fmt.Fprintf(stdout, "agentstats %s\n", appversion.String())
 		return 0
 	}
 	if kind != "stats" && kind != "tools" && kind != "skills" {
 		fmt.Fprintf(stderr, "error: unknown command %q\n\n%s", args[0], usageText)
 		return 2
 	}
+	if hasOption(args[1:], "--help") || hasOption(args[1:], "-h") {
+		_, _ = io.WriteString(stdout, commandUsage(kind))
+		return 0
+	}
+	if hasOption(args[1:], "--version") {
+		fmt.Fprintln(stderr, "error: --version is a top-level option; use agentstats --version")
+		return 2
+	}
 
 	flags := flag.NewFlagSet(kind, flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	flags.Usage = func() { fmt.Fprint(stderr, usageText) }
+	flags.Usage = func() { fmt.Fprint(stderr, commandUsage(kind)) }
 	days := flags.Int("days", 0, "include the last N days")
 	codexHome := flags.String("codex-home", "", "Codex home path")
 	color := flags.String("color", string(output.ColorAuto), "human report color mode")
 	layer := flags.String("layer", string(usage.LayerEffective), "tool layer")
+	groupBy := flags.String("group-by", string(aggregate.SkillGroupByTurn), "skill aggregation unit")
 	strict := flags.Bool("strict", false, "count confirmed skills only")
 	verbose := flags.Bool("verbose", false, "show input warning details")
 	strictInput := flags.Bool("strict-input", false, "exit non-zero when input records are skipped")
 	jsonOutput := flags.Bool("json", false, "emit JSON")
-	csvOutput := flags.Bool("csv", false, "emit CSV")
 	if err := flags.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -74,10 +160,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if extra := flags.Args(); len(extra) > 0 {
 		fmt.Fprintf(stderr, "error: unexpected argument %q\n", extra[0])
-		return 2
-	}
-	if *jsonOutput && *csvOutput {
-		fmt.Fprintln(stderr, "error: --json and --csv cannot be used together")
 		return 2
 	}
 	mode := output.ColorMode(*color)
@@ -92,6 +174,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if kind != "tools" && *layer != string(usage.LayerEffective) {
 		fmt.Fprintln(stderr, "error: --layer is only valid for tools")
+		return 2
+	}
+	selectedGroupBy := aggregate.SkillGroupBy(*groupBy)
+	if !selectedGroupBy.Valid() {
+		fmt.Fprintf(stderr, "error: invalid --group-by %q (want turn or session)\n", *groupBy)
+		return 2
+	}
+	if kind == "tools" && selectedGroupBy != aggregate.SkillGroupByTurn {
+		fmt.Fprintln(stderr, "error: --group-by is only valid for stats or skills")
 		return 2
 	}
 	if kind != "skills" && *strict {
@@ -125,25 +216,21 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	aggregateInput := aggregate.Input{Turns: input.Turns, SessionCount: len(input.Sessions), Warnings: input.Warnings}
-	report := aggregate.BuildOverview(aggregateInput)
+	report := aggregate.BuildOverviewBy(aggregateInput, selectedGroupBy)
 	if kind == "tools" {
 		report.Tools = aggregate.Tools(aggregateInput, selectedLayer)
 	}
 	if kind == "skills" {
-		report.Skills = aggregate.Skills(aggregateInput, *strict)
+		report.Skills = aggregate.SkillsBy(aggregateInput, *strict, selectedGroupBy)
 	}
 	period := "all time"
 	if daysSet {
 		period = fmt.Sprintf("last %d days", *days)
 	}
-	context := output.ReportContext{Agent: "codex", Period: period, Layer: selectedLayer, Strict: *strict, ReferenceTime: now, Location: time.Local}
-	if *jsonOutput || *csvOutput {
-		format := "json"
-		if *csvOutput {
-			format = "csv"
-		}
-		if err := output.WriteMachine(stdout, kind, format, context, report); err != nil {
-			fmt.Fprintf(stderr, "error: render %s: %v\n", format, err)
+	context := output.ReportContext{Agent: "codex", Period: period, Layer: selectedLayer, SkillGroupBy: selectedGroupBy, Strict: *strict, ReferenceTime: now, Location: time.Local}
+	if *jsonOutput {
+		if err := output.WriteJSON(stdout, kind, context, report); err != nil {
+			fmt.Fprintf(stderr, "error: render json: %v\n", err)
 			return 1
 		}
 	} else {

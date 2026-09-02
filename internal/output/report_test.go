@@ -41,6 +41,25 @@ func TestStandardToolLayoutKeepsLastUsed(t *testing.T) {
 	}
 }
 
+func TestSkillReportPrioritizesReadableNames(t *testing.T) {
+	ctx := ReportContext{Agent: "codex", Period: "all time", SkillGroupBy: aggregate.SkillGroupByTurn}
+	report := aggregate.Report{Skills: []aggregate.SkillRow{
+		{Name: "openspec-apply-change", Total: 90},
+		{Name: "git-workflow-and-versioning", Total: 85},
+	}}
+	got := RenderHuman("skills", ctx, report, TerminalCapabilities{Width: 105, ColorMode: ColorNever})
+	for _, name := range []string{"openspec-apply-change", "git-workflow-and-versioning"} {
+		if !strings.Contains(got, name) {
+			t.Errorf("skill name %q was truncated too aggressively:\n%s", name, got)
+		}
+	}
+	for _, line := range strings.Split(strings.TrimSpace(got), "\n") {
+		if lipgloss.Width(line) > 105 {
+			t.Errorf("line too wide: %d: %q", lipgloss.Width(line), line)
+		}
+	}
+}
+
 func TestRenderHumanAlwaysColorAndCompactEllipsis(t *testing.T) {
 	ctx := ReportContext{Agent: "codex", Period: "all time", Layer: usage.LayerEffective}
 	colored := RenderHuman("skills", ctx, sampleReport(), TerminalCapabilities{Width: 120, ColorMode: ColorAlways})
@@ -94,13 +113,6 @@ func TestMachineRenderersNeverEmitANSIAndKeepEmptyArrays(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	data, err = RenderCSV("skills", ctx, empty)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), "\x1b[") || !strings.HasPrefix(string(data), "name,explicit,implicit,unknown,confirmed,inferred,unconfirmed,total,last_used") {
-		t.Fatalf("CSV = %s", data)
-	}
 }
 
 func TestSkillReportShowsUnknownActivationMode(t *testing.T) {
@@ -114,14 +126,12 @@ func TestSkillReportShowsUnknownActivationMode(t *testing.T) {
 	}
 }
 
-func TestRenderCSVQuotesNames(t *testing.T) {
-	report := aggregate.Report{Tools: []aggregate.ToolRow{{Name: "tool,with-comma", Calls: 1}}}
-	data, err := RenderCSV("tools", ReportContext{}, report)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), `"tool,with-comma",1,0`) {
-		t.Fatalf("CSV did not quote name: %s", data)
+func TestSkillReportShowsGroupingUnit(t *testing.T) {
+	ctx := ReportContext{Agent: "codex", Period: "all time", SkillGroupBy: aggregate.SkillGroupBySession}
+	report := aggregate.Report{Skills: []aggregate.SkillRow{{Name: "report", Total: 1}}}
+	got := RenderHuman("skills", ctx, report, TerminalCapabilities{Width: 80, ColorMode: ColorNever})
+	if !strings.Contains(got, "Group by: session") {
+		t.Fatalf("grouping unit missing: %s", got)
 	}
 }
 

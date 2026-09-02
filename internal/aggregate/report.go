@@ -14,6 +14,18 @@ type Input struct {
 	Warnings     []usage.Warning
 }
 
+// SkillGroupBy controls the unit counted for Skill usage.
+type SkillGroupBy string
+
+const (
+	SkillGroupByTurn    SkillGroupBy = "turn"
+	SkillGroupBySession SkillGroupBy = "session"
+)
+
+func (groupBy SkillGroupBy) Valid() bool {
+	return groupBy == SkillGroupByTurn || groupBy == SkillGroupBySession
+}
+
 type Overview struct {
 	Sessions    int
 	UserPrompts int
@@ -51,6 +63,12 @@ type Report struct {
 // effective view is used for overview Tool Calls, while model/runtime rows are
 // retained for the tools command.
 func BuildOverview(input Input) Report {
+	return BuildOverviewBy(input, SkillGroupByTurn)
+}
+
+// BuildOverviewBy computes the overview using the requested Skill grouping.
+// Tool and prompt counts are unaffected by the grouping unit.
+func BuildOverviewBy(input Input, groupBy SkillGroupBy) Report {
 	result := Report{Warnings: append([]usage.Warning(nil), input.Warnings...)}
 	sessions := make(map[string]struct{})
 	allSkills := make([]usage.SkillEvidence, 0)
@@ -67,7 +85,7 @@ func BuildOverview(input Input) Report {
 	if result.Overview.Sessions == 0 {
 		result.Overview.Sessions = len(sessions)
 	}
-	uses := usage.MergeSkillEvidence(allSkills)
+	uses := groupSkillUses(usage.MergeSkillEvidence(allSkills), groupBy)
 	result.Overview.SkillUses = len(uses)
 	result.Tools = aggregateTools(input.Turns, usage.LayerEffective)
 	result.Skills = aggregateSkills(uses, false)
@@ -79,11 +97,93 @@ func Tools(input Input, layer usage.ToolLayer) []ToolRow {
 }
 
 func Skills(input Input, strict bool) []SkillRow {
+	return SkillsBy(input, strict, SkillGroupByTurn)
+}
+
+// SkillsBy returns Skill rows counted by turn or session. The existing
+// Skills function remains the turn-grouped compatibility default.
+func SkillsBy(input Input, strict bool, groupBy SkillGroupBy) []SkillRow {
 	evidence := make([]usage.SkillEvidence, 0)
 	for _, turn := range input.Turns {
 		evidence = append(evidence, turn.SkillEvidence...)
 	}
-	return aggregateSkills(usage.MergeSkillEvidence(evidence), strict)
+	return aggregateSkills(groupSkillUses(usage.MergeSkillEvidence(evidence), groupBy), strict)
+}
+
+func groupSkillUses(uses []usage.SkillUse, groupBy SkillGroupBy) []usage.SkillUse {
+	if groupBy != SkillGroupBySession {
+		return uses
+	}
+	type entry struct {
+		use   usage.SkillUse
+		modes map[usage.SkillMode]struct{}
+	}
+	entries := make(map[string]*entry, len(uses))
+	for _, item := range uses {
+		key := item.SessionID + "\x00" + item.SkillName
+		current, ok := entries[key]
+		if !ok {
+			copy := item
+			copy.Modes = nil
+			current = &entry{use: copy, modes: make(map[usage.SkillMode]struct{})}
+			entries[key] = current
+		}
+		for _, mode := range skillUseModes(item) {
+			current.modes[mode] = struct{}{}
+		}
+		if skillStateRank(item.State) > skillStateRank(current.use.State) {
+			current.use.State = item.State
+		}
+		if current.use.Timestamp.IsZero() || (!item.Timestamp.IsZero() && item.Timestamp.After(current.use.Timestamp)) {
+			current.use.Timestamp = item.Timestamp
+			current.use.Source = item.Source
+		}
+	}
+	result := make([]usage.SkillUse, 0, len(entries))
+	for _, current := range entries {
+		current.use.Modes = make([]usage.SkillMode, 0, len(current.modes))
+		for mode := range current.modes {
+			current.use.Modes = append(current.use.Modes, mode)
+		}
+		sort.Slice(current.use.Modes, func(i, j int) bool { return current.use.Modes[i] < current.use.Modes[j] })
+		if len(current.use.Modes) > 0 {
+			current.use.Mode = current.use.Modes[0]
+		}
+		result = append(result, current.use)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Timestamp.Equal(result[j].Timestamp) {
+			if result[i].SessionID == result[j].SessionID {
+				return result[i].SkillName < result[j].SkillName
+			}
+			return result[i].SessionID < result[j].SessionID
+		}
+		return result[i].Timestamp.Before(result[j].Timestamp)
+	})
+	return result
+}
+
+func skillUseModes(use usage.SkillUse) []usage.SkillMode {
+	if len(use.Modes) > 0 {
+		return use.Modes
+	}
+	if use.Mode == "" {
+		return nil
+	}
+	return []usage.SkillMode{use.Mode}
+}
+
+func skillStateRank(state usage.SkillState) int {
+	switch state {
+	case usage.StateConfirmed:
+		return 3
+	case usage.StateInferred:
+		return 2
+	case usage.StateUnconfirmed:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func aggregateTools(turns []usage.Turn, layer usage.ToolLayer) []ToolRow {

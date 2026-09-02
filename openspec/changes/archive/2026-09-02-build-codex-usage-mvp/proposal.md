@@ -8,7 +8,7 @@ Codex のローカル履歴から「どの Tool と Skill が実際に使われ�
 - model が選択した外側の Tool call と、実際に完了した runtime action を区別し、通常の Tool統計では runtime action を優先する。
 - 注入された `<skill>`、structured Skill tool、`SKILL.md` または Skill配下scriptへのアクセスから Skill利用を検出し、明示利用と推定利用を区別する。
 - `agentstats stats`、`agentstats tools`、`agentstats skills` を提供する。
-- 期間filterと、人が集計条件・主要数値・内訳を把握しやすいstatic report・JSON・CSV出力を提供し、Skill統計には確認可能な利用証拠だけを対象にする strict mode を提供する。
+- 期間filterと、人が集計条件・主要数値・内訳を把握しやすいstatic report・JSON出力を提供し、Skill統計には確認可能な利用証拠だけを対象にする strict mode を提供する。
 - human-readable reportはterminal capabilityに応じて見出し、整列、色、compact layoutを使い、redirect時やcolor無効時も装飾なしで読みやすく表示する。
 - source record、検出方式、観測layerを保持する共通Eventへ正規化し、未知または破損したrecordを安全に扱う。
 - MVPは Codex のみに対応し、OpenCode、他Agent、token/cost集計、DB、interactive TUI、Web UIは対象外とする。
@@ -19,7 +19,7 @@ Codex のローカル履歴から「どの Tool と Skill が実際に使われ�
 
 - `codex-history-ingestion`: Codex historyの探索、streaming読取、期間filter、schema差異と破損recordの処理を定義する。
 - `usage-event-normalization`: session、prompt、Tool、Skillの観測結果を、layer・検出根拠・重複排除規則を含む共通Eventへ変換する。
-- `usage-statistics-cli`: stats・tools・skillsコマンド、filter、human-readable static report・JSON・CSV出力、およびCLIの失敗時動作を定義する。
+- `usage-statistics-cli`: stats・tools・skillsコマンド、filter、human-readable static report・JSON出力、およびCLIの失敗時動作を定義する。
 
 ### Modified Capabilities
 

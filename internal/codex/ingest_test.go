@@ -218,6 +218,32 @@ func TestLoadRecognizesSnakeCaseItemCompletedAndImplicitSkillAccess(t *testing.T
 	}
 }
 
+func TestLoadDoesNotInferSkillFromFailedRuntimeAccess(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, "sessions", "one.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lines := []string{
+		`{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"s"}}`,
+		`{"timestamp":"2026-01-01T00:00:01Z","type":"task_started","payload":{"turn_id":"t"}}`,
+		`{"timestamp":"2026-01-01T00:00:02Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"i1","status":"failed","command":"cat /fixture-home/.agents/skills/report/SKILL.md"}}}`,
+		`{"timestamp":"2026-01-01T00:00:03Z","type":"task_complete","payload":{"turn_id":"t"}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Load(home, IngestOptions{Now: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, evidence := range result.Turns[0].SkillEvidence {
+		if evidence.Method == usage.MethodImplicitAccess {
+			t.Fatalf("failed runtime access should not infer skill evidence: %#v", result.Turns[0].SkillEvidence)
+		}
+	}
+}
+
 func TestSelectedSkillInjectionWithoutExplicitRequestIsUnknown(t *testing.T) {
 	home := t.TempDir()
 	path := filepath.Join(home, "sessions", "one.jsonl")

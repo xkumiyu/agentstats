@@ -31,7 +31,7 @@ Codexの通常rollout JSONLにはmodelが選択した `FunctionCall` / `CustomTo
 
 ### 1. Go 1.27、標準library、限定した描画libraryで実装する
 
-moduleは `github.com/xkumiyu/agentstats`、実行入口は `cmd/agentstats` とする。subcommandは `flag.FlagSet`、JSON/CSVはそれぞれ `encoding/json` と `encoding/csv` で実装する。human-readable reportにはstableな `charm.land/lipgloss/v2`、TTY判定とterminal幅取得には `golang.org/x/term` を使用する。選定時点のLip Gloss stable releaseはv2.0.6であり、実装時は互換性を確認したversionを `go.mod` / `go.sum` で固定する。
+moduleは `github.com/xkumiyu/agentstats`、実行入口は `cmd/agentstats` とする。subcommandは `flag.FlagSet`、JSONは `encoding/json` で実装する。human-readable reportにはstableな `charm.land/lipgloss/v2`、TTY判定とterminal幅取得には `golang.org/x/term` を使用する。選定時点のLip Gloss stable releaseはv2.0.6であり、実装時は互換性を確認したversionを `go.mod` / `go.sum` で固定する。
 
 3 commandと少数optionの解析には標準libraryで十分であり、Cobraやinteractive frameworkは追加しない。一方、ANSI、Unicode幅、color profile、table styleを独自実装すると描画bugと保守costが増えるため、その責務だけをLip Glossへ委ねる。Bubble TeaはModel-Update-Viewのevent loopを必要とするinteractive TUI向けであり、本MVPには導入しない。`text/tabwriter`だけの実装も検討したが、TTY-awareなstyleと幅別layoutを安全に扱うには不足する。
 
@@ -48,7 +48,7 @@ Tool + Skill normalizers
         ↓
 aggregators
         ↓
-table / JSON / CSV renderers
+table / JSON renderers
 ```
 
 想定する境界は次のとおりとする。
@@ -58,7 +58,7 @@ cmd/agentstats       argument parsingと終了code
 internal/codex      source探索、JSONL decode、turn組立
 internal/usage      共通Event、Tool/Skill検出と重複排除
 internal/aggregate  stats/tools/skills view
-internal/output     human report / JSON / CSV renderer
+internal/output     human report / JSON renderer
 ```
 
 初期実装ではAgent interfaceやadapter registryを先に抽象化しない。Codex parserが共通Eventを返す境界だけを守り、2つ目のAgentを追加するときに実際の差異からinterfaceを抽出する。
@@ -118,7 +118,7 @@ name解決の優先順位はstructured evidence、履歴内metadata、frontmatte
 
 aggregatorはrendererに依存しないtyped resultを返す。rowはCallsまたはTotalの降順、同数時はcanonical nameの昇順でsortしてからrendererへ渡す。
 
-JSONはcommandごとのobjectに `schema_version: 1`、基準時刻、適用filter、集計dataを含める。CSVは固定headerを持つrow集合とする。JSON/CSV rendererはLip Glossを通さず、ANSIを生成できない経路に分離する。warning collectorはskip理由ごとの件数だけを保持し、render完了後にstderrへ要約するため、machine-readable stdoutへ混入しない。
+JSONはcommandごとのobjectに `schema_version: 1`、基準時刻、適用filter、集計dataを含める。JSON rendererはLip Glossを通さず、ANSIを生成できない経路に分離する。warning collectorはskip理由ごとの件数だけを保持し、render完了後にstderrへ要約するため、machine-readable stdoutへ混入しない。
 
 human rendererには集計resultとは別に、次の値を持つ `ReportContext` と `TerminalCapabilities` を渡す。
 
@@ -130,7 +130,7 @@ TerminalCapabilities
   is_tty / width / color profile / color mode / no_color
 ```
 
-実環境では `x/term.IsTerminal` と `x/term.GetSize` からcapabilityを構築し、testでは固定値を注入する。`--color auto` はTTYかつ `NO_COLOR` 未設定の場合だけstyleを有効化し、`always` / `never` は強制modeとして優先する。ただしJSON/CSVは常にstyle無効とする。
+実環境では `x/term.IsTerminal` と `x/term.GetSize` からcapabilityを構築し、testでは固定値を注入する。`--color auto` はTTYかつ `NO_COLOR` 未設定の場合だけstyleを有効化し、`always` / `never` は強制modeとして優先する。ただしJSONは常にstyle無効とする。
 
 human reportは次の情報hierarchyを共通化する。
 
@@ -145,7 +145,7 @@ countは人間向け表示で桁区切りし、数値columnを右揃えにする
 
 layoutは取得した幅に応じて3段階とする。100 column以上では全内訳を含むwide layout、70〜99では補助columnを減らすstandard layout、70未満ではnameと主要countを中心にしたcompact layoutを使用する。長いnameは表示幅を考慮してellipsisで短縮し、rowを複数lineへ折り返さない。`stats` summaryは狭幅時に横並びから縦並びへ切り替える。幅を取得できないplain outputでは80 column相当のstandard layoutを使用する。
 
-0件時は空tableを描画せず、titleとfilter contextに続けて対象期間に利用がない旨を表示する。JSONは空array、CSVはheaderのみを維持する。
+0件時は空tableを描画せず、titleとfilter contextに続けて対象期間に利用がない旨を表示する。JSONは空arrayを維持する。
 
 ### 9. fixtureとgolden reportで互換性を固定する
 
@@ -159,7 +159,7 @@ layoutは取得した幅に応じて3段階とする。100 column以上では全
 - malformed line、unknown record、欠落field、長いline
 - `sessions` / `archived_sessions` と期間境界
 
-parser・normalizerにはtable-driven test、各commandにはgolden JSON/CSV/report testを置く。human reportは60・80・120 column、TTY/non-TTY、dark/light color profile、`NO_COLOR`、3つのcolor mode、empty stateを固定capabilityでsnapshot化する。ANSI sequenceの有無、wide/compactで保持すべきfield、Unicodeを含むnameのellipsisをassertする。JSON decoderとSkill detectorにはfuzz testを追加し、panicしないことと任意本文をSkillと誤認しないことを確認する。
+parser・normalizerにはtable-driven test、各commandにはgolden JSON/report testを置く。human reportは60・80・120 column、TTY/non-TTY、dark/light color profile、`NO_COLOR`、3つのcolor mode、empty stateを固定capabilityでsnapshot化する。ANSI sequenceの有無、wide/compactで保持すべきfield、Unicodeを含むnameのellipsisをassertする。JSON decoderとSkill detectorにはfuzz testを追加し、panicしないことと任意本文をSkillと誤認しないことを確認する。
 
 ## Risks / Trade-offs
 
@@ -168,13 +168,13 @@ parser・normalizerにはtable-driven test、各commandにはgolden JSON/CSV/rep
 - [`explicit-request` が失敗したSkill選択も利用として数える] → `unconfirmed` として分離し、`--strict` から除外する。注入証拠があれば同一turnでconfirmedへ昇格する。
 - [現在のfilesystem状態が過去のSkill名解決へ影響する] → 履歴内metadataを優先し、filesystemは補助情報だけに使う。検出method/stateを結果へ残す。
 - [逐次scanが履歴増加に伴い遅くなる] → MVPでは正しさと単純さを優先する。profileで必要性を確認してから、並列scanまたはincremental cacheを別changeで導入する。
-- [pathやcommandに機微情報が含まれる] → table/CSV/JSONには集計名と件数だけを既定出力し、raw command・tool output・Skill本文は保持または表示しない。
-- [ANSI sequenceがpipe・JSON・CSVへ漏れる] → machine rendererをstyle layerから分離し、non-TTY・`NO_COLOR`・強制colorを含むgolden testで検証する。
+- [pathやcommandに機微情報が含まれる] → table/JSONには集計名と件数だけを既定出力し、raw command・tool output・Skill本文は保持または表示しない。
+- [ANSI sequenceがpipe・JSONへ漏れる] → machine rendererをstyle layerから分離し、non-TTY・`NO_COLOR`・強制colorを含むgolden testで検証する。
 - [terminal幅やUnicode幅でcolumnが崩れる] → terminal capabilityを注入可能にし、Lip Glossの表示幅計算と複数幅のsnapshot testを使用する。
 - [描画libraryのdependencyが増える] → Lip Glossとterminal検出に限定し、versionを固定して `go mod verify` とdependency reviewを行う。interactive frameworkは導入しない。
 
 ## Migration Plan
 
-既存実装や永続dataがないためmigrationは不要である。実装はdomain modelとfixture、Codex ingestion、normalization、aggregation、machine renderer、human renderer、CLI wiringの順に追加し、各段階でtestを通す。release前に匿名化fixtureとread-onlyな実環境sampleの両方で、plain report・styled report・JSON・CSVを比較する。
+既存実装や永続dataがないためmigrationは不要である。実装はdomain modelとfixture、Codex ingestion、normalization、aggregation、machine renderer、human renderer、CLI wiringの順に追加し、各段階でtestを通す。release前に匿名化fixtureとread-onlyな実環境sampleの両方で、plain report・styled report・JSONを比較する。
 
 rollbackはbinaryまたはreleaseを以前の版へ戻すだけで完了する。agentstatsはCodex履歴を変更せずcacheも作らないため、user dataのrollback手順は不要である。

@@ -29,18 +29,18 @@
 - [x] 5.1 Sessions・User Prompts・effective Tool Calls・Skill Usesのoverview aggregatorを実装し、Skill注入をpromptから除外するtestと空入力testを通す
 - [x] 5.2 Tool名別のCalls・Failures・Last Usedと `effective|runtime|model` 選択を実装し、件数降順・名前昇順の決定的sortをunit testで確認する
 - [x] 5.3 Skill名別のExplicit・Implicit・Confirmed・Inferred・Unconfirmed・Total・Last Usedとstrict filterを実装し、dedup済み利用を一度だけ数えるunit testを通す
-- [x] 5.4 typed resultからhuman-readable static report・JSON schema version 1・CSVを生成するrendererを実装し、固定時刻を使うgolden testでtitle/filter/section/footer、桁区切り・右揃え・timezone付きLast Used、field/header順、RFC 3339、CSV quoting、空結果を確認する
+- [x] 5.4 typed resultからhuman-readable static report・JSON schema version 1を生成するrendererを実装し、固定時刻を使うgolden testでtitle/filter/section/footer、桁区切り・右揃え・timezone付きLast Used、field順、RFC 3339、空結果を確認する
 - [x] 5.5 Lip Glossと `TerminalCapabilities` を使うhuman rendererを実装し、60/80/120 column、TTY/non-TTY、dark/light profile、`NO_COLOR`、`auto|always|never`、Unicode ellipsis、wide/standard/compact、empty stateのsnapshot testを通す
 
 ## 6. CLI統合
 
-- [x] 6.1 標準libraryの `flag.FlagSet` で `stats`、`tools`、`skills` と共通option（`--color auto|always|never`を含む）を実装し、help、未知command、無効値、`--json` / `--csv` 競合、TTY/redirect/`NO_COLOR`/color mode、Tool layer、Skill strictのargument testを通す
-- [x] 6.2 ingestionからrendererまで各commandを接続し、匿名化Codex homeを使うintegration testでhuman reportのplain/styled/compact表示、JSON/CSVのANSIなし、全形式の件数一致、stdout/stderr分離、終了codeを確認する
+- [x] 6.1 標準libraryの `flag.FlagSet` で `stats`、`tools`、`skills` と共通option（`--color auto|always|never`を含む）を実装し、help、未知command、無効値、TTY/redirect/`NO_COLOR`/color mode、Tool layer、Skill strictのargument testを通す
+- [x] 6.2 ingestionからrendererまで各commandを接続し、匿名化Codex homeを使うintegration testでhuman reportのplain/styled/compact表示、JSONのANSIなし、各形式の件数一致、stdout/stderr分離、終了codeを確認する
 - [x] 6.3 CLI overviewのTool Callsが `tools` のeffective合計、Skill Usesが通常 `skills` のTotal合計と一致するend-to-end testを追加して通す
 
 ## 7. Hardeningとhandoff
 
 - [x] 7.1 envelope decoderとSkill detectorへfuzz testを追加し、seed corpus実行でpanicしないことと通常proseをSkill利用にしないことを `go test ./...` で確認する
-- [x] 7.2 read-only integration testと実環境smoke testを実行し、Codex homeのfile metadataが変化しないこと、network依存がないこと、warning発生時もhuman report/JSON/CSVが有効であることを確認する
+- [x] 7.2 read-only integration testと実環境smoke testを実行し、Codex homeのfile metadataが変化しないこと、network依存がないこと、warning発生時もhuman report/JSONが有効であることを確認する
 - [x] 7.3 READMEへinstall/build、3 command、全option、human reportのlayout・color/`NO_COLOR`・狭いterminal対応、Tool layer、Skill state/strict、privacy、interactive TUIをMVP対象外とすることを記載し、READMEの例がbinaryの `--help` とintegration fixture上の実行結果に一致することを確認する
 - [x] 7.4 `gofmt`、`go vet ./...`、`go mod verify`、`go test -race ./...`、`go test ./...`、`go build ./cmd/agentstats`、`openspec validate build-codex-usage-mvp --strict` を実行し、すべて成功することを確認する

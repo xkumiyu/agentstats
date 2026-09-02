@@ -1,8 +1,6 @@
 package output
 
 import (
-	"bytes"
-	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -72,6 +70,7 @@ type ReportContext struct {
 	Agent         string
 	Period        string
 	Layer         usage.ToolLayer
+	SkillGroupBy  aggregate.SkillGroupBy
 	Strict        bool
 	ReferenceTime time.Time
 	Location      *time.Location
@@ -131,9 +130,19 @@ func contextLine(kind string, ctx ReportContext) string {
 		parts = append(parts, "Layer: "+string(layer))
 	}
 	if kind == "skills" {
+		parts = append(parts, "Group by: "+string(contextSkillGroupBy(ctx)))
 		parts = append(parts, "Strict: "+strconv.FormatBool(ctx.Strict))
+	} else if kind == "stats" {
+		parts = append(parts, "Skill group by: "+string(contextSkillGroupBy(ctx)))
 	}
 	return strings.Join(parts, "  ·  ")
+}
+
+func contextSkillGroupBy(ctx ReportContext) aggregate.SkillGroupBy {
+	if ctx.SkillGroupBy.Valid() {
+		return ctx.SkillGroupBy
+	}
+	return aggregate.SkillGroupByTurn
 }
 
 func renderStats(summary aggregate.Overview, width int, styled bool) string {
@@ -218,7 +227,10 @@ func renderSkills(rows []aggregate.SkillRow, ctx ReportContext, width int, style
 		}
 		return strings.Join(lines, "\n")
 	}
-	if width < 100 {
+	// Keep the full Skill identity readable before spending terminal width on
+	// secondary evidence columns. The wide layout is only useful when its name
+	// column can accommodate every row without truncation.
+	if width < 100 || width-97 < maxSkillNameContentWidth(rows) {
 		nameWidth := maxSkillNameWidth(width-39, rows)
 		lines := []string{padRight(styleHeader("Skill", styled), nameWidth) + "  " + padLeft(styleHeader("Explicit", styled), 8) + "  " + padLeft(styleHeader("Implicit", styled), 8) + "  " + padLeft(styleHeader("Unknown", styled), 8) + "  " + padLeft(styleHeader("Total", styled), 7)}
 		for _, row := range rows {
@@ -254,14 +266,19 @@ func maxSkillNameWidth(available int, rows []aggregate.SkillRow) int {
 	if available < 8 {
 		available = 8
 	}
+	max := maxSkillNameContentWidth(rows)
+	if max > available {
+		return available
+	}
+	return max
+}
+
+func maxSkillNameContentWidth(rows []aggregate.SkillRow) int {
 	max := 8
 	for _, row := range rows {
 		if w := lipgloss.Width(safeDisplay(row.Name)); w > max {
 			max = w
 		}
-	}
-	if max > available {
-		return available
 	}
 	return max
 }
@@ -430,7 +447,8 @@ func RenderJSON(kind string, ctx ReportContext, report aggregate.Report) ([]byte
 			UserPrompts   int    `json:"user_prompts"`
 			ToolCalls     int    `json:"tool_calls"`
 			SkillUses     int    `json:"skill_uses"`
-		}{base.SchemaVersion, base.Agent, base.Period, formatMachineTime(ctx.ReferenceTime), report.Overview.Sessions, report.Overview.UserPrompts, report.Overview.ToolCalls, report.Overview.SkillUses}
+			GroupBy       string `json:"group_by"`
+		}{base.SchemaVersion, base.Agent, base.Period, formatMachineTime(ctx.ReferenceTime), report.Overview.Sessions, report.Overview.UserPrompts, report.Overview.ToolCalls, report.Overview.SkillUses, string(contextSkillGroupBy(ctx))}
 		return json.MarshalIndent(value, "", "  ")
 	case "tools":
 		rows := make([]toolJSON, 0, len(report.Tools))
@@ -457,8 +475,9 @@ func RenderJSON(kind string, ctx ReportContext, report aggregate.Report) ([]byte
 			Period        string      `json:"period"`
 			GeneratedAt   string      `json:"generated_at"`
 			Strict        bool        `json:"strict"`
+			GroupBy       string      `json:"group_by"`
 			Rows          []skillJSON `json:"rows"`
-		}{base.SchemaVersion, base.Agent, base.Period, formatMachineTime(ctx.ReferenceTime), ctx.Strict, rows}
+		}{base.SchemaVersion, base.Agent, base.Period, formatMachineTime(ctx.ReferenceTime), ctx.Strict, string(contextSkillGroupBy(ctx)), rows}
 		return json.MarshalIndent(value, "", "  ")
 	default:
 		return nil, fmt.Errorf("unknown report kind %q", kind)
@@ -491,63 +510,13 @@ type skillJSON struct {
 	LastUsed    string `json:"last_used"`
 }
 
-// RenderCSV returns a stable-header CSV document. Metadata is represented by
-// the report-specific columns, keeping it easy to consume with spreadsheet and
-// shell tools.
-func RenderCSV(kind string, _ ReportContext, report aggregate.Report) ([]byte, error) {
-	var buffer bytes.Buffer
-	writer := csv.NewWriter(&buffer)
-	switch kind {
-	case "stats":
-		if err := writer.Write([]string{"sessions", "user_prompts", "tool_calls", "skill_uses"}); err != nil {
-			return nil, err
-		}
-		if err := writer.Write([]string{strconv.Itoa(report.Overview.Sessions), strconv.Itoa(report.Overview.UserPrompts), strconv.Itoa(report.Overview.ToolCalls), strconv.Itoa(report.Overview.SkillUses)}); err != nil {
-			return nil, err
-		}
-	case "tools":
-		if err := writer.Write([]string{"name", "calls", "failures", "last_used"}); err != nil {
-			return nil, err
-		}
-		for _, row := range report.Tools {
-			if err := writer.Write([]string{row.Name, strconv.Itoa(row.Calls), strconv.Itoa(row.Failures), formatMachineTime(row.LastUsed)}); err != nil {
-				return nil, err
-			}
-		}
-	case "skills":
-		if err := writer.Write([]string{"name", "explicit", "implicit", "unknown", "confirmed", "inferred", "unconfirmed", "total", "last_used"}); err != nil {
-			return nil, err
-		}
-		for _, row := range report.Skills {
-			if err := writer.Write([]string{row.Name, strconv.Itoa(row.Explicit), strconv.Itoa(row.Implicit), strconv.Itoa(row.Unknown), strconv.Itoa(row.Confirmed), strconv.Itoa(row.Inferred), strconv.Itoa(row.Unconfirmed), strconv.Itoa(row.Total), formatMachineTime(row.LastUsed)}); err != nil {
-				return nil, err
-			}
-		}
-	default:
-		return nil, fmt.Errorf("unknown report kind %q", kind)
-	}
-	writer.Flush()
-	if err := writer.Error(); err != nil {
-		return nil, err
-	}
-	return buffer.Bytes(), nil
-}
-
-// WriteMachine writes machine output without adding ANSI sequences.
-func WriteMachine(w io.Writer, kind string, format string, ctx ReportContext, report aggregate.Report) error {
-	if format == "json" {
-		data, err := RenderJSON(kind, ctx, report)
-		if err != nil {
-			return err
-		}
-		_, err = fmt.Fprintln(w, string(data))
-		return err
-	}
-	data, err := RenderCSV(kind, ctx, report)
+// WriteJSON writes machine-readable output without adding ANSI sequences.
+func WriteJSON(w io.Writer, kind string, ctx ReportContext, report aggregate.Report) error {
+	data, err := RenderJSON(kind, ctx, report)
 	if err != nil {
 		return err
 	}
-	_, err = w.Write(data)
+	_, err = fmt.Fprintln(w, string(data))
 	return err
 }
 

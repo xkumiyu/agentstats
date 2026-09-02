@@ -1,8 +1,10 @@
+# usage-statistics-cli Specification
+
 ## Purpose
 
 Codexのsession・user prompt・Tool・Skill利用を、system logではなく集計条件と要点が伝わるstatic reportとして端末へ表示し、同じ内容をscriptや分析toolから再利用できる軽量CLIとして提供する。
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: overview統計を表示する
 `agentstats stats` は対象Agentと期間が分かるreport titleに続けて、Sessions、User Prompts、Tool Calls、およびSkill Usesを視覚的に区切られたsummaryとして表示しなければならない（SHALL）。Tool Callsはeffective Tool view、Skill Usesはturn単位で重複排除した全確認状態の利用を使用しなければならない（SHALL）。
@@ -31,7 +33,7 @@ Codexのsession・user prompt・Tool・Skill利用を、system logではなく�
 - **THEN** システムは引数errorをstderrへ出力し、非0の終了codeを返す
 
 ### Requirement: Skill統計を表示する
-`agentstats skills` はreport titleと選択中の期間・strict状態に続けて、Skill名ごとのExplicit、Implicit、Confirmed、Inferred、Unconfirmed、Total、およびLast Usedを集計しなければならない（SHALL）。human-readable reportは利用可能な幅に応じて内訳columnを調整できるが、Skill名とTotalを常に表示しなければならない（SHALL）。JSONとCSVはすべての集計fieldを保持しなければならない（SHALL）。`--strict` が指定された場合はstateが `confirmed` の利用だけをTotalと各mode集計の対象にしなければならない（SHALL）。
+`agentstats skills` はreport titleと選択中の期間・strict状態に続けて、Skill名ごとのExplicit、Implicit、Confirmed、Inferred、Unconfirmed、Total、およびLast Usedを集計しなければならない（SHALL）。human-readable reportは利用可能な幅に応じて内訳columnを調整できるが、Skill名とTotalを常に表示しなければならない（SHALL）。JSONはすべての集計fieldを保持しなければならない（SHALL）。`--strict` が指定された場合はstateが `confirmed` の利用だけをTotalと各mode集計の対象にしなければならない（SHALL）。
 
 #### Scenario: 全Skill観測を表示する
 - **WHEN** userが `agentstats skills` を実行する
@@ -56,8 +58,8 @@ Codexのsession・user prompt・Tool・Skill利用を、system logではなく�
 - **WHEN** userが `agentstats stats --codex-home /tmp/codex-home` を実行する
 - **THEN** システムは指定先だけをsourceとしてoverviewを生成する
 
-### Requirement: human-readable report・JSON・CSVを提供する
-各統計commandは既定で、title、適用中のfilter、明確なsectionまたはcolumn heading、整列した値、および必要なfooterを持つhuman-readable static reportを出力しなければならない（SHALL）。countは桁区切りして右揃えにし、tableのLast Usedはtimezoneを含む簡潔なlocal日時で表示しなければならない（SHALL）。`--json` または `--csv` でmachine-readable出力へ切り替えられなければならず（SHALL）、JSONとCSVはhuman-readable reportと同じfilter・集計結果を表してfieldまたはcolumn順をcommandごとに安定させ、timestampをRFC 3339で出力しなければならない（SHALL）。
+### Requirement: human-readable report・JSONを提供する
+各統計commandは既定で、title、適用中のfilter、明確なsectionまたはcolumn heading、整列した値、および必要なfooterを持つhuman-readable static reportを出力しなければならない（SHALL）。countは桁区切りして右揃えにし、tableのLast Usedはtimezoneを含む簡潔なlocal日時で表示しなければならない（SHALL）。`--json` でmachine-readable出力へ切り替えられなければならず（SHALL）、JSONはhuman-readable reportと同じfilter・集計結果を表してfield順をcommandごとに安定させ、timestampをRFC 3339で出力しなければならない（SHALL）。
 
 #### Scenario: 既定reportを表示する
 - **WHEN** userが出力形式を指定せず任意の統計commandを実行する
@@ -67,16 +69,8 @@ Codexのsession・user prompt・Tool・Skill利用を、system logではなく�
 - **WHEN** userが任意の統計commandへ `--json` を指定する
 - **THEN** stdout全体は単独の有効なJSON documentとなり、warningや進捗messageを含まない
 
-#### Scenario: CSVを出力する
-- **WHEN** userが任意の統計commandへ `--csv` を指定する
-- **THEN** stdoutはheaderを含む有効なCSVとなり、値は必要に応じて正しくquoteされる
-
-#### Scenario: 出力形式を複数指定する
-- **WHEN** userが `--json` と `--csv` を同時に指定する
-- **THEN** システムは引数errorをstderrへ出力し、非0の終了codeを返す
-
 ### Requirement: terminal capabilityに応じて安全に装飾する
-既定の `--color auto` では、システムはstdoutがTTYであり `NO_COLOR` が設定されていない場合だけhuman-readable reportへANSI styleを適用しなければならない（SHALL）。`--color always` は明示的にstyleを有効化し、`--color never` は無効化しなければならず、この2つの強制modeは `NO_COLOR` より優先しなければならない（SHALL）。JSONとCSVにはoptionやterminal状態にかかわらずANSI escape sequenceを含めてはならない（MUST NOT）。色は補助表現に限り、label、text、数値、または配置なしに意味を伝えてはならない（MUST NOT）。
+既定の `--color auto` では、システムはstdoutがTTYであり `NO_COLOR` が設定されていない場合だけhuman-readable reportへANSI styleを適用しなければならない（SHALL）。`--color always` は明示的にstyleを有効化し、`--color never` は無効化しなければならず、この2つの強制modeは `NO_COLOR` より優先しなければならない（SHALL）。JSONにはoptionやterminal状態にかかわらずANSI escape sequenceを含めてはならない（MUST NOT）。色は補助表現に限り、label、text、数値、または配置なしに意味を伝えてはならない（MUST NOT）。
 
 #### Scenario: TTYへ既定reportを出力する
 - **WHEN** stdoutがcolor対応TTYで、`--color` が未指定か `auto` であり、`NO_COLOR` が設定されていない
@@ -95,8 +89,8 @@ Codexのsession・user prompt・Tool・Skill利用を、system logではなく�
 - **THEN** システムはTTY判定や `NO_COLOR` より明示指定を優先してstyleを有効化または無効化する
 
 #### Scenario: machine-readable出力でcolorを強制する
-- **WHEN** userが `--json --color always` または `--csv --color always` を指定する
-- **THEN** システムはANSIを含まない有効なJSONまたはCSVを出力する
+- **WHEN** userが `--json --color always` を指定する
+- **THEN** システムはANSIを含まない有効なJSONを出力する
 
 ### Requirement: terminal幅に応じてreportをcompact化する
 human-readable reportは取得可能なterminal幅へ収まるようにlayoutを選択しなければならない（SHALL）。狭い幅では補助的な内訳columnを省略またはcompact化できるが、report title、対象期間、row identity、および主要countを保持しなければならない（SHALL）。長いnameはcolumn境界内で省略記号付きに短縮し、異なるrowの値に見える折返しをしてはならない（MUST NOT）。
@@ -110,7 +104,7 @@ human-readable reportは取得可能なterminal幅へ収まるようにlayoutを
 - **THEN** システムは主要nameとcountを残したcompact layoutを表示し、table rowを誤解を招く形で折り返さない
 
 ### Requirement: 空結果を行動可能なmessageで示す
-`tools` または `skills` の対象rowが0件の場合、human-readable reportは空tableだけを表示せず、対象期間に該当利用がないことと適用中のfilterを説明しなければならない（SHALL）。JSONは空array、CSVはheaderのみを出力しなければならない（SHALL）。
+`tools` または `skills` の対象rowが0件の場合、human-readable reportは空tableだけを表示せず、対象期間に該当利用がないことと適用中のfilterを説明しなければならない（SHALL）。JSONは空arrayを出力しなければならない（SHALL）。
 
 #### Scenario: 期間内にSkill利用がない
 - **WHEN** userが `agentstats skills --days 1` を実行し、対象Skill利用が0件である
@@ -124,15 +118,15 @@ human-readable reportは取得可能なterminal幅へ収まるようにlayoutを
 - **THEN** システムは利用可能なcommandを示すerrorをstderrへ出力し、非0で終了する
 
 #### Scenario: machine-readable出力中にwarningが発生する
-- **WHEN** `--json` または `--csv` の集計中に一部recordがskipされる
-- **THEN** stdoutは有効なmachine-readable documentのままであり、warning要約はstderrだけに出力される
+- **WHEN** `--json` の集計中に一部recordがskipされる
+- **THEN** stdoutは有効なJSON documentのままであり、warning要約はstderrだけに出力される
 
 ### Requirement: 同一入力から決定的な結果を生成する
 システムは同じ履歴、同じfilter、および同じ基準時刻に対して、file探索順に依存しない同一の件数とrow順序を生成しなければならない（SHALL）。同じterminal capability、幅、およびcolor modeを与えたhuman-readable reportはbyte単位で決定的でなければならない（SHALL）。
 
 #### Scenario: file列挙順が変わる
 - **WHEN** 同一内容の履歴fileが異なる順序で列挙される
-- **THEN** table・JSON・CSVのrow順序と集計値は変化しない
+- **THEN** table・JSONのrow順序と集計値は変化しない
 
 #### Scenario: terminal capabilityを固定する
 - **WHEN** 同じ集計resultを同じ幅、color profile、TTY状態、基準時刻で複数回描画する

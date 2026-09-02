@@ -11,12 +11,13 @@ import (
 )
 
 var (
-	skillBlockRE = regexp.MustCompile(`(?is)<skill(?:\s+[^>]*)?>(.*?)</skill\s*>`)
-	attrRE       = regexp.MustCompile(`(?i)(?:name|skill|skill_name|path)\s*=\s*["']([^"']+)["']`)
-	requestRE    = regexp.MustCompile(`^\s*\$([A-Za-z0-9][A-Za-z0-9_.-]*)\b`)
-	frontNameRE  = regexp.MustCompile(`(?im)^\s*name\s*:\s*["']?([^\s"']+)["']?\s*$`)
-	tagNameRE    = regexp.MustCompile(`(?is)<(?:name|skill_name)\s*>\s*([^<\s]+)\s*</(?:name|skill_name)\s*>`)
-	skillNameRE  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+	skillBlockRE         = regexp.MustCompile(`(?is)<skill(?:\s+[^>]*)?>(.*?)</skill\s*>`)
+	attrRE               = regexp.MustCompile(`(?i)(?:name|skill|skill_name|path)\s*=\s*["']([^"']+)["']`)
+	requestRE            = regexp.MustCompile(`^\s*\$([A-Za-z0-9][A-Za-z0-9_.:-]*)\b`)
+	frontNameRE          = regexp.MustCompile(`(?im)^\s*name\s*:\s*["']?([^\s"']+)["']?\s*$`)
+	tagNameRE            = regexp.MustCompile(`(?is)<(?:name|skill_name)\s*>\s*([^<\s]+)\s*</(?:name|skill_name)\s*>`)
+	skillNameRE          = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+	qualifiedSkillNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*(?::[A-Za-z0-9][A-Za-z0-9_.-]*)*$`)
 )
 
 // DetectInjectedSkills recognizes an explicit structured <skill> block. It is
@@ -85,7 +86,11 @@ func DetectExplicitRequest(text, sessionID, turnID string, timestamp time.Time, 
 	if len(match) < 2 {
 		return nil
 	}
-	return []SkillEvidence{NewSkillEvidence(sessionID, turnID, match[1], ModeExplicit, MethodExplicitRequest, StateUnconfirmed, timestamp, source)}
+	name := skillNameFromValue(match[1])
+	if name == "" {
+		return nil
+	}
+	return []SkillEvidence{NewSkillEvidence(sessionID, turnID, name, ModeExplicit, MethodExplicitRequest, StateUnconfirmed, timestamp, source)}
 }
 
 // DetectStructuredSkillTool extracts a skill only when a known Skill tool has
@@ -139,34 +144,53 @@ func SkillNameFromPath(path string) string {
 		if !strings.EqualFold(parts[i], "skills") || i+1 >= len(parts) {
 			continue
 		}
-		for nameIndex := i + 1; nameIndex < len(parts); nameIndex++ {
-			name := strings.TrimSpace(parts[nameIndex])
-			if name == "" || strings.EqualFold(name, "SKILL.md") || strings.EqualFold(name, "scripts") {
-				continue
-			}
-			// The bundled Codex skills use .codex/skills/.system/<name>/SKILL.md.
-			// Treat the scope directory as part of the root, not the skill name.
-			if strings.EqualFold(name, ".system") {
-				continue
-			}
-			if !skillNameRE.MatchString(name) {
-				return ""
-			}
-			for j := nameIndex + 1; j < len(parts); j++ {
-				if strings.EqualFold(parts[j], "SKILL.md") || strings.EqualFold(parts[j], "scripts") {
-					return name
-				}
-			}
-			return ""
+		nameIndex := i + 1
+		// The bundled Codex skills use .codex/skills/.system/<name>/SKILL.md.
+		// Treat the scope directory as part of the root, not the skill name.
+		if strings.EqualFold(parts[nameIndex], ".system") {
+			nameIndex++
 		}
+		if nameIndex >= len(parts) {
+			continue
+		}
+		name := strings.TrimSpace(parts[nameIndex])
+		if name == "" || !skillNameRE.MatchString(name) || nameIndex+1 >= len(parts) || !skillPathTarget(parts[nameIndex+1]) {
+			continue
+		}
+		return qualifiedSkillName(skillNamespaceAt(parts, i), name)
 	}
 	return ""
+}
+
+func skillPathTarget(value string) bool {
+	return strings.EqualFold(value, "SKILL.md") || strings.EqualFold(value, "scripts")
+}
+
+func skillNamespaceAt(parts []string, skillsIndex int) string {
+	// Plugin cache paths have the generic shape
+	// plugins/cache/<plugin>/<namespace>/<version>/skills/<skill>.
+	if skillsIndex < 5 || !strings.EqualFold(parts[skillsIndex-5], "plugins") || !strings.EqualFold(parts[skillsIndex-4], "cache") {
+		return ""
+	}
+	namespace := strings.TrimSpace(parts[skillsIndex-2])
+	if !skillNameRE.MatchString(namespace) {
+		return ""
+	}
+	return namespace
+}
+
+func qualifiedSkillName(namespace, name string) string {
+	if namespace == "" {
+		return name
+	}
+	return namespace + ":" + name
 }
 
 // FrontmatterSkillName reads only an already-recognized SKILL.md path. A
 // missing/deleted skill file is intentionally treated as a normal fallback.
 func FrontmatterSkillName(path string) string {
-	if SkillNameFromPath(path) == "" || !strings.EqualFold(filepath.Base(path), "SKILL.md") || !knownSkillRoot(path) {
+	pathName := SkillNameFromPath(path)
+	if pathName == "" || !strings.EqualFold(filepath.Base(path), "SKILL.md") || !knownSkillRoot(path) {
 		return ""
 	}
 	data, err := os.ReadFile(path)
@@ -177,7 +201,14 @@ func FrontmatterSkillName(path string) string {
 	if len(match) < 2 {
 		return ""
 	}
-	return strings.TrimSpace(string(match[1]))
+	name := strings.TrimSpace(string(match[1]))
+	if !qualifiedSkillNameRE.MatchString(name) {
+		return ""
+	}
+	if separator := strings.IndexByte(pathName, ':'); separator > 0 && !strings.Contains(name, ":") {
+		return qualifiedSkillName(pathName[:separator], name)
+	}
+	return name
 }
 
 func knownSkillRoot(path string) bool {
@@ -186,7 +217,7 @@ func knownSkillRoot(path string) bool {
 		if !strings.EqualFold(part, "skills") {
 			continue
 		}
-		if i == 0 || (i > 0 && (strings.EqualFold(parts[i-1], ".agents") || strings.EqualFold(parts[i-1], ".codex"))) {
+		if i == 0 || (i > 0 && (strings.EqualFold(parts[i-1], ".agents") || strings.EqualFold(parts[i-1], ".codex"))) || skillNamespaceAt(parts, i) != "" {
 			return true
 		}
 	}
@@ -341,7 +372,7 @@ func skillNameFromValue(value string) string {
 	if strings.ContainsAny(value, " \t\r\n") {
 		return ""
 	}
-	if !skillNameRE.MatchString(value) {
+	if !qualifiedSkillNameRE.MatchString(value) {
 		return ""
 	}
 	return value

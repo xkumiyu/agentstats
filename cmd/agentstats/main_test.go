@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/xkumiyu/agentstats/internal/usage"
+	appversion "github.com/xkumiyu/agentstats/internal/version"
 )
 
 func testHome(t *testing.T) string {
@@ -131,6 +133,159 @@ func TestRunCommandsAndMachineOutput(t *testing.T) {
 	}
 }
 
+func TestRunVersionFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--version"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("version exit=%d stderr=%s", code, stderr.String())
+	}
+	if got, want := stdout.String(), "agentstats "+appversion.String()+"\n"; got != want {
+		t.Fatalf("version output = %q, want %q", got, want)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("version wrote stderr: %q", stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"stats", "--version"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "use agentstats --version") {
+		t.Fatalf("subcommand version exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunHelpIsScopedToCommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--help"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("root help exit=%d stderr=%s", code, stderr.String())
+	}
+	for _, want := range []string{"Usage:", "agentstats <command> [options]", "stats", "tools", "skills", "--version"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("root help missing %q: %s", want, stdout.String())
+		}
+	}
+	for _, unwanted := range []string{"--days", "--layer", "--strict"} {
+		if helpContainsOption(stdout.String(), unwanted) {
+			t.Errorf("root help contains command option %q: %s", unwanted, stdout.String())
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("root help wrote stderr: %q", stderr.String())
+	}
+
+	for _, test := range []struct {
+		command string
+		want    []string
+		omit    []string
+	}{
+		{command: "stats", want: []string{"Usage: agentstats stats [options]", "--days", "--group-by"}, omit: []string{"--layer", "--strict"}},
+		{command: "tools", want: []string{"Usage: agentstats tools [options]", "--days", "--layer"}, omit: []string{"--group-by", "--strict"}},
+		{command: "skills", want: []string{"Usage: agentstats skills [options]", "--days", "--group-by", "--strict"}, omit: []string{"--layer"}},
+	} {
+		stdout.Reset()
+		stderr.Reset()
+		if code := run([]string{test.command, "--help"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("%s help exit=%d stderr=%s", test.command, code, stderr.String())
+		}
+		for _, want := range test.want {
+			if !strings.Contains(stdout.String(), want) {
+				t.Errorf("%s help missing %q: %s", test.command, want, stdout.String())
+			}
+		}
+		for _, unwanted := range test.omit {
+			if helpContainsOption(stdout.String(), unwanted) {
+				t.Errorf("%s help contains unrelated option %q: %s", test.command, unwanted, stdout.String())
+			}
+		}
+		if stderr.Len() != 0 {
+			t.Errorf("%s help wrote stderr: %q", test.command, stderr.String())
+		}
+	}
+}
+
+func helpContainsOption(text, option string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == option {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRunSkillsSupportsSessionGrouping(t *testing.T) {
+	home := t.TempDir()
+	writeSession := func(id string, turns int) {
+		history := filepath.Join(home, "sessions", id+".jsonl")
+		lines := []string{`{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"` + id + `"}}`}
+		for i := 0; i < turns; i++ {
+			turnID := id + "-t" + strconv.Itoa(i+1)
+			lines = append(lines,
+				`{"timestamp":"2026-01-01T00:00:0`+strconv.Itoa(i+1)+`Z","type":"task_started","payload":{"turn_id":"`+turnID+`"}}`,
+				`{"timestamp":"2026-01-01T00:00:0`+strconv.Itoa(i+1)+`Z","type":"user_message","payload":{"text":"$report"}}`,
+				`{"timestamp":"2026-01-01T00:00:0`+strconv.Itoa(i+1)+`Z","type":"task_complete","payload":{"turn_id":"`+turnID+`"}}`,
+			)
+		}
+		if err := os.MkdirAll(filepath.Dir(history), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(history, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeSession("s1", 2)
+	writeSession("s2", 1)
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"skills", "--codex-home", home, "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("turn grouping exit=%d stderr=%s", code, stderr.String())
+	}
+	var turnValue struct {
+		GroupBy string `json:"group_by"`
+		Rows    []struct {
+			Total int `json:"total"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &turnValue); err != nil {
+		t.Fatal(err)
+	}
+	if turnValue.GroupBy != "turn" || len(turnValue.Rows) != 1 || turnValue.Rows[0].Total != 3 {
+		t.Fatalf("turn grouping = %#v", turnValue)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"skills", "--codex-home", home, "--json", "--group-by", "session"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("session grouping exit=%d stderr=%s", code, stderr.String())
+	}
+	var sessionValue struct {
+		GroupBy string `json:"group_by"`
+		Rows    []struct {
+			Total int `json:"total"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &sessionValue); err != nil {
+		t.Fatal(err)
+	}
+	if sessionValue.GroupBy != "session" || len(sessionValue.Rows) != 1 || sessionValue.Rows[0].Total != 2 {
+		t.Fatalf("session grouping = %#v", sessionValue)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"stats", "--codex-home", home, "--json", "--group-by", "session"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("stats session grouping exit=%d stderr=%s", code, stderr.String())
+	}
+	var statsValue struct {
+		GroupBy   string `json:"group_by"`
+		SkillUses int    `json:"skill_uses"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &statsValue); err != nil {
+		t.Fatal(err)
+	}
+	if statsValue.GroupBy != "session" || statsValue.SkillUses != 2 {
+		t.Fatalf("stats session grouping = %#v", statsValue)
+	}
+}
+
 func TestRunRejectsInvalidArguments(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"unknown"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "unknown command") {
@@ -138,8 +293,8 @@ func TestRunRejectsInvalidArguments(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := run([]string{"stats", "--json", "--csv"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "cannot be used together") {
-		t.Fatalf("format conflict exit=%d stderr=%s", code, stderr.String())
+	if code := run([]string{"stats", "--codex-home", testHome(t), "--csv"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "flag provided but not defined") {
+		t.Fatalf("removed csv option exit=%d stderr=%s", code, stderr.String())
 	}
 	stdout.Reset()
 	stderr.Reset()
@@ -150,6 +305,16 @@ func TestRunRejectsInvalidArguments(t *testing.T) {
 	stderr.Reset()
 	if code := run([]string{"stats", "extra"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "unexpected argument") {
 		t.Fatalf("extra argument exit=%d stderr=%s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"skills", "--group-by", "event"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "invalid --group-by") {
+		t.Fatalf("invalid group-by exit=%d stderr=%s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"tools", "--group-by", "session"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "only valid for stats or skills") {
+		t.Fatalf("tools group-by exit=%d stderr=%s", code, stderr.String())
 	}
 }
 

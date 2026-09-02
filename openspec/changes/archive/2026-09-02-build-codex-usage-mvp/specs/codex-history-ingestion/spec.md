@@ -46,7 +46,7 @@ Codex がローカルに保存する session JSONL を安全かつ再現可能�
 - **THEN** システムは後続recordをそのsession ID、project path、Codex CLI versionと関連付ける
 
 ### Requirement: 未知・破損recordから回復する
-システムは未知のrecord type、未知のfield、単独の不正JSON line、または個別fileの読取errorによって、他の有効な履歴の集計を中断してはならない（MUST NOT）。skip件数と理由の要約はstderrへwarningとして出力し、stdoutのtable・JSON・CSVを汚染してはならない（MUST NOT）。
+システムは未知のrecord type、未知のfield、単独の不正JSON line、または個別fileの読取errorによって、他の有効な履歴の集計を中断してはならない（MUST NOT）。skip件数と理由の要約はstderrへwarningとして出力し、stdoutのtable・JSONを汚染してはならない（MUST NOT）。
 
 #### Scenario: 未知のrecord typeがある
 - **WHEN** 対応していない `type` を持つ有効なJSON lineがある
