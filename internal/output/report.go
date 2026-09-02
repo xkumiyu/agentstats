@@ -122,17 +122,17 @@ func RenderHuman(kind string, ctx ReportContext, report aggregate.Report, capabi
 
 func contextLine(kind string, ctx ReportContext) string {
 	parts := []string{"Period: " + ctx.period()}
-	if kind == "tools" {
+	switch kind {
+	case "tools":
 		layer := ctx.Layer
 		if layer == "" {
 			layer = usage.LayerEffective
 		}
 		parts = append(parts, "Layer: "+string(layer))
-	}
-	if kind == "skills" {
+	case "skills":
 		parts = append(parts, "Group by: "+string(contextSkillGroupBy(ctx)))
 		parts = append(parts, "Strict: "+strconv.FormatBool(ctx.Strict))
-	} else if kind == "stats" {
+	case "stats":
 		parts = append(parts, "Skill group by: "+string(contextSkillGroupBy(ctx)))
 	}
 	return strings.Join(parts, "  ·  ")

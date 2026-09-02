@@ -128,7 +128,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if kind != "stats" && kind != "tools" && kind != "skills" {
-		fmt.Fprintf(stderr, "error: unknown command %q\n\n%s", args[0], usageText)
+		_, _ = fmt.Fprintf(stderr, "error: unknown command %q\n\n%s", args[0], usageText)
 		return 2
 	}
 	if hasOption(args[1:], "--help") || hasOption(args[1:], "-h") {
@@ -136,13 +136,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if hasOption(args[1:], "--version") {
-		fmt.Fprintln(stderr, "error: --version is a top-level option; use agentstats --version")
+		_, _ = fmt.Fprintln(stderr, "error: --version is a top-level option; use agentstats --version")
 		return 2
 	}
 
 	flags := flag.NewFlagSet(kind, flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	flags.Usage = func() { fmt.Fprint(stderr, commandUsage(kind)) }
+	flags.Usage = func() { _, _ = fmt.Fprint(stderr, commandUsage(kind)) }
 	days := flags.Int("days", 0, "include the last N days")
 	codexHome := flags.String("codex-home", "", "Codex home path")
 	color := flags.String("color", string(output.ColorAuto), "human report color mode")
@@ -159,38 +159,38 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if extra := flags.Args(); len(extra) > 0 {
-		fmt.Fprintf(stderr, "error: unexpected argument %q\n", extra[0])
+		_, _ = fmt.Fprintf(stderr, "error: unexpected argument %q\n", extra[0])
 		return 2
 	}
 	mode := output.ColorMode(*color)
 	if !mode.Valid() {
-		fmt.Fprintf(stderr, "error: invalid --color %q (want auto, always, or never)\n", *color)
+		_, _ = fmt.Fprintf(stderr, "error: invalid --color %q (want auto, always, or never)\n", *color)
 		return 2
 	}
 	selectedLayer := usage.ToolLayer(*layer)
 	if selectedLayer != usage.LayerEffective && selectedLayer != usage.LayerRuntime && selectedLayer != usage.LayerModel {
-		fmt.Fprintf(stderr, "error: invalid --layer %q (want effective, runtime, or model)\n", *layer)
+		_, _ = fmt.Fprintf(stderr, "error: invalid --layer %q (want effective, runtime, or model)\n", *layer)
 		return 2
 	}
 	if kind != "tools" && *layer != string(usage.LayerEffective) {
-		fmt.Fprintln(stderr, "error: --layer is only valid for tools")
+		_, _ = fmt.Fprintln(stderr, "error: --layer is only valid for tools")
 		return 2
 	}
 	selectedGroupBy := aggregate.SkillGroupBy(*groupBy)
 	if !selectedGroupBy.Valid() {
-		fmt.Fprintf(stderr, "error: invalid --group-by %q (want turn or session)\n", *groupBy)
+		_, _ = fmt.Fprintf(stderr, "error: invalid --group-by %q (want turn or session)\n", *groupBy)
 		return 2
 	}
 	if kind == "tools" && selectedGroupBy != aggregate.SkillGroupByTurn {
-		fmt.Fprintln(stderr, "error: --group-by is only valid for stats or skills")
+		_, _ = fmt.Fprintln(stderr, "error: --group-by is only valid for stats or skills")
 		return 2
 	}
 	if kind != "skills" && *strict {
-		fmt.Fprintln(stderr, "error: --strict is only valid for skills")
+		_, _ = fmt.Fprintln(stderr, "error: --strict is only valid for skills")
 		return 2
 	}
 	if *days < 0 {
-		fmt.Fprintln(stderr, "error: --days must be at least 1")
+		_, _ = fmt.Fprintln(stderr, "error: --days must be at least 1")
 		return 2
 	}
 	daysSet := false
@@ -200,19 +200,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	})
 	if daysSet && *days == 0 {
-		fmt.Fprintln(stderr, "error: --days must be at least 1")
+		_, _ = fmt.Fprintln(stderr, "error: --days must be at least 1")
 		return 2
 	}
 
 	home, err := codex.ResolveHome(*codexHome)
 	if err != nil {
-		fmt.Fprintf(stderr, "error: resolve Codex home: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: resolve Codex home: %v\n", err)
 		return 1
 	}
 	now := time.Now().UTC()
 	input, err := codex.Load(home, codex.IngestOptions{Days: *days, DaysSet: daysSet, Now: now})
 	if err != nil {
-		fmt.Fprintf(stderr, "error: read Codex history %q: %v\n", home, err)
+		_, _ = fmt.Fprintf(stderr, "error: read Codex history %q: %v\n", home, err)
 		return 1
 	}
 	aggregateInput := aggregate.Input{Turns: input.Turns, SessionCount: len(input.Sessions), Warnings: input.Warnings}
@@ -230,7 +230,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	context := output.ReportContext{Agent: "codex", Period: period, Layer: selectedLayer, SkillGroupBy: selectedGroupBy, Strict: *strict, ReferenceTime: now, Location: time.Local}
 	if *jsonOutput {
 		if err := output.WriteJSON(stdout, kind, context, report); err != nil {
-			fmt.Fprintf(stderr, "error: render json: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "error: render json: %v\n", err)
 			return 1
 		}
 	} else {
@@ -241,13 +241,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		text := output.RenderHuman(kind, context, report, capabilities)
 		if _, err := io.WriteString(stdout, text); err != nil {
-			fmt.Fprintf(stderr, "error: write report: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "error: write report: %v\n", err)
 			return 1
 		}
 	}
 	writeWarnings(stderr, input.Warnings, *verbose)
 	if *strictInput && len(input.Warnings) > 0 {
-		fmt.Fprintln(stderr, "error: input warnings encountered (--strict-input)")
+		_, _ = fmt.Fprintln(stderr, "error: input warnings encountered (--strict-input)")
 		return 1
 	}
 	return 0
@@ -276,9 +276,9 @@ func writeWarnings(w io.Writer, warnings []usage.Warning, verbose ...bool) {
 			count = 1
 		}
 		if location == "" {
-			fmt.Fprintf(w, "warning: %s%s (%s)\n", cleanWarningValue(warning.Reason), typeSuffix, formatWarningCount(count))
+			_, _ = fmt.Fprintf(w, "warning: %s%s (%s)\n", cleanWarningValue(warning.Reason), typeSuffix, formatWarningCount(count))
 		} else {
-			fmt.Fprintf(w, "warning: %s%s at %s (%s)\n", cleanWarningValue(warning.Reason), typeSuffix, location, formatWarningCount(count))
+			_, _ = fmt.Fprintf(w, "warning: %s%s at %s (%s)\n", cleanWarningValue(warning.Reason), typeSuffix, location, formatWarningCount(count))
 		}
 	}
 }
@@ -323,11 +323,11 @@ func writeWarningSummary(w io.Writer, warnings []usage.Warning) {
 	detailText := strings.Join(details, ", ")
 	switch {
 	case summary.records > 0 && summary.readFiles > 0:
-		fmt.Fprintf(w, "warning: skipped %s %s across %s %s; could not read %s %s (%s); use --verbose to show details\n", formatWarningCount(summary.records), warningRecordLabel(summary.records), formatWarningCount(fileCount), fileLabel, formatWarningCount(summary.readFiles), warningFileLabel(summary.readFiles), detailText)
+		_, _ = fmt.Fprintf(w, "warning: skipped %s %s across %s %s; could not read %s %s (%s); use --verbose to show details\n", formatWarningCount(summary.records), warningRecordLabel(summary.records), formatWarningCount(fileCount), fileLabel, formatWarningCount(summary.readFiles), warningFileLabel(summary.readFiles), detailText)
 	case summary.readFiles > 0:
-		fmt.Fprintf(w, "warning: could not read %s %s (%s); use --verbose to show details\n", formatWarningCount(summary.readFiles), warningFileLabel(summary.readFiles), detailText)
+		_, _ = fmt.Fprintf(w, "warning: could not read %s %s (%s); use --verbose to show details\n", formatWarningCount(summary.readFiles), warningFileLabel(summary.readFiles), detailText)
 	default:
-		fmt.Fprintf(w, "warning: skipped %s %s across %s %s (%s); use --verbose to show details\n", formatWarningCount(summary.total), warningRecordLabel(summary.total), formatWarningCount(fileCount), fileLabel, detailText)
+		_, _ = fmt.Fprintf(w, "warning: skipped %s %s across %s %s (%s); use --verbose to show details\n", formatWarningCount(summary.total), warningRecordLabel(summary.total), formatWarningCount(fileCount), fileLabel, detailText)
 	}
 }
 

@@ -114,7 +114,7 @@ func (o DecodeOptions) maxLineBytes() int {
 
 // DecodeFile streams valid, known envelopes to fn. A malformed or unknown line
 // is recorded and does not stop later lines from being decoded.
-func DecodeFile(path string, opts DecodeOptions, fn func(Envelope)) error {
+func DecodeFile(path string, opts DecodeOptions, fn func(Envelope)) (err error) {
 	if fn == nil {
 		fn = func(Envelope) {}
 	}
@@ -122,7 +122,11 @@ func DecodeFile(path string, opts DecodeOptions, fn func(Envelope)) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close %q: %w", path, closeErr)
+		}
+	}()
 	warnings := opts.Warnings
 	if warnings == nil {
 		warnings = &WarningCollector{}

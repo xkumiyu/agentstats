@@ -649,7 +649,8 @@ func shellAssignment(value string) bool {
 	}
 	name := value[:index]
 	for i, ch := range name {
-		if !(ch == '_' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z' || i > 0 && ch >= '0' && ch <= '9') {
+		valid := ch == '_' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z' || i > 0 && ch >= '0' && ch <= '9'
+		if !valid {
 			return false
 		}
 	}

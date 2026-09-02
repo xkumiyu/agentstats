@@ -297,12 +297,12 @@ func stringValue(raw map[string]any, key string) string {
 	switch typed := value.(type) {
 	case string:
 		return typed
+	case json.Number:
+		return typed.String()
 	case fmt.Stringer:
 		return typed.String()
 	case float64:
 		return fmt.Sprintf("%g", typed)
-	case json.Number:
-		return typed.String()
 	default:
 		return ""
 	}

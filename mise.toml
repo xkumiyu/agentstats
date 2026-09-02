@@ -1,0 +1,34 @@
+[tools]
+go = "1.27"
+golangci-lint = "2.13.2"
+
+[env]
+_.path = "{{config_root}}/bin"
+
+[tasks.build]
+description = "Build the CLI"
+run = "go build -o ./bin/agentstats ./cmd/agentstats"
+
+[tasks.test]
+description = "Run race-enabled tests"
+run = "go test -race ./..."
+
+[tasks.fmt]
+description = "Format Go code"
+run = "go fmt ./..."
+
+[tasks.fmt-check]
+description = "Check Go formatting"
+run = "test -z \"$(gofmt -l .)\""
+
+[tasks.lint]
+description = "Run golangci-lint"
+run = "golangci-lint run"
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."
+
+[tasks.check]
+description = "Run all CI checks"
+depends = ["fmt-check", "lint", "vet", "test", "build"]

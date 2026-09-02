@@ -1,7 +1,11 @@
-tmp/
+/tmp/
+
+# Local worktrees
+/.worktrees/
 
 # APM dependencies
-apm_modules/
+/apm_modules/
 
 # Local build output
 /agentstats
+/bin/
