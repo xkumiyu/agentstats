@@ -451,8 +451,11 @@ func TestRunUnusedSkillsKeepsWarningsSeparate(t *testing.T) {
 	if strings.Contains(stdout.String(), "malformed_json") || strings.Contains(stdout.String(), "warning:") || strings.Contains(stdout.String(), "\x1b[") {
 		t.Fatalf("warning or ANSI leaked into JSON: %s", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "malformed_json") {
-		t.Fatalf("warning missing from stderr: %s", stderr.String())
+	if !strings.Contains(stderr.String(), "warning: skipped 1 record") {
+		t.Fatalf("warning summary missing from stderr: %s", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "malformed_json") || strings.Contains(stderr.String(), "/one.jsonl") {
+		t.Fatalf("warning details leaked into summary: %s", stderr.String())
 	}
 
 	stdout.Reset()
@@ -631,8 +634,11 @@ func TestRunKeepsWarningsOffMachineReadableStdout(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &value); err != nil {
 		t.Fatalf("stdout is not JSON: %v (%s)", err, stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "malformed_json") {
-		t.Fatalf("warning missing from stderr: %s", stderr.String())
+	if !strings.Contains(stderr.String(), "warning: skipped 1 record") {
+		t.Fatalf("warning summary missing from stderr: %s", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "malformed_json") || strings.Contains(stderr.String(), "/one.jsonl") {
+		t.Fatalf("warning details leaked into summary: %s", stderr.String())
 	}
 }
 
@@ -648,12 +654,12 @@ func TestWriteWarningsAggregatesByReasonAndType(t *testing.T) {
 	if strings.Count(got, "warning:") != 1 {
 		t.Fatalf("summary should contain one warning: %q", got)
 	}
-	for _, want := range []string{"skipped 4 records", "across 2 files", "unknown_type: future_a=2, future_b=1", "malformed_json=1", "--verbose"} {
+	for _, want := range []string{"warning: skipped 4 records", "across 2 files", "--verbose"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("summary missing %q: %q", want, got)
 		}
 	}
-	if strings.Contains(got, "/one.jsonl") || strings.Contains(got, "/two.jsonl") {
+	if strings.Contains(got, "/one.jsonl") || strings.Contains(got, "/two.jsonl") || strings.Contains(got, "unknown_type") || strings.Contains(got, "malformed_json") {
 		t.Fatalf("summary leaked file paths: %q", got)
 	}
 }
@@ -666,10 +672,38 @@ func TestWriteWarningsVerboseIncludesDetails(t *testing.T) {
 	var output bytes.Buffer
 	writeWarnings(&output, warnings, true)
 	got := output.String()
-	for _, want := range []string{"future_a", "/one.jsonl:1", "/two.jsonl:4"} {
+	for _, want := range []string{"warning: skipped unknown record type type=future_a at /one.jsonl:1", "warning: skipped malformed JSON record at /two.jsonl:4"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("verbose warning missing %q: %q", want, got)
 		}
+	}
+	if strings.Contains(got, "unknown_type") || strings.Contains(got, "malformed_json") {
+		t.Fatalf("verbose output used internal warning names: %q", got)
+	}
+}
+
+func TestWriteWarningsTreatsOversizedRecordsAsInformational(t *testing.T) {
+	warnings := []usage.Warning{{Reason: "large_line", Path: "/one.jsonl", Line: 220, Count: 1}}
+	var output bytes.Buffer
+	writeWarnings(&output, warnings, false)
+	got := output.String()
+	for _, want := range []string{"info: skipped 1 record across 1 file", "--verbose"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("informational summary missing %q: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "warning:") || strings.Contains(got, "large_line") || strings.Contains(got, "/one.jsonl") {
+		t.Fatalf("informational summary was too prominent or detailed: %q", got)
+	}
+
+	output.Reset()
+	writeWarnings(&output, warnings, true)
+	got = output.String()
+	if !strings.Contains(got, "info: skipped oversized history record at /one.jsonl:220 (1)") {
+		t.Fatalf("informational detail missing: %q", got)
+	}
+	if strings.Contains(got, "warning:") || strings.Contains(got, "large_line") {
+		t.Fatalf("oversized record was rendered as a warning: %q", got)
 	}
 }
 
@@ -681,7 +715,7 @@ func TestWriteWarningsSeparatesUnreadableFilesFromSkippedRecords(t *testing.T) {
 	var output bytes.Buffer
 	writeWarnings(&output, warnings, false)
 	got := output.String()
-	for _, want := range []string{"skipped 2 records", "could not read 1 file", "across 2 files"} {
+	for _, want := range []string{"warning: skipped 2 records", "could not read 1 file", "across 2 files"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("summary missing %q: %q", want, got)
 		}
@@ -730,11 +764,24 @@ func TestRunStylesDiagnosticPrefixesOnly(t *testing.T) {
 	}
 	got := stderr.String()
 	warningPrefix := "\x1b[1;93mwarning:\x1b[m "
-	if !strings.HasPrefix(got, warningPrefix) {
+	if !strings.HasPrefix(got, "\n"+warningPrefix) {
 		t.Fatalf("warning prefix is not yellow and bold: %q", got)
 	}
-	if strings.Contains(strings.TrimPrefix(got, warningPrefix), "\x1b[") {
+	if strings.Contains(strings.TrimPrefix(got, "\n"+warningPrefix), "\x1b[") {
 		t.Fatalf("warning body is styled with its prefix: %q", got)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"stats", "--codex-home", home, "--color", "always", "--verbose"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("verbose exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	got = stderr.String()
+	if !strings.HasPrefix(got, "\n"+warningPrefix) {
+		t.Fatalf("verbose diagnostics are not separated from the report: %q", got)
+	}
+	if strings.Contains(got, "\n\n") {
+		t.Fatalf("verbose diagnostics contain an extra blank line: %q", got)
 	}
 
 	stdout.Reset()

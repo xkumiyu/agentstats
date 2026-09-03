@@ -382,6 +382,7 @@ func TestDiagnosticPrefixUsesSemanticColor(t *testing.T) {
 	}{
 		{name: "warning", level: "warning", capabilities: TerminalCapabilities{ColorMode: ColorAlways}, want: "\x1b[1;93mwarning:\x1b[m"},
 		{name: "error", level: "error", capabilities: TerminalCapabilities{ColorMode: ColorAlways}, want: "\x1b[1;91merror:\x1b[m"},
+		{name: "info", level: "info", capabilities: TerminalCapabilities{ColorMode: ColorAlways}, want: "\x1b[2minfo:\x1b[m"},
 		{name: "never", level: "warning", capabilities: TerminalCapabilities{ColorMode: ColorNever}, want: "warning:"},
 	}
 
@@ -391,6 +392,16 @@ func TestDiagnosticPrefixUsesSemanticColor(t *testing.T) {
 				t.Fatalf("DiagnosticPrefix(%q) = %q, want %q", tt.level, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDiagnosticMessageFaintsInformationalText(t *testing.T) {
+	capabilities := TerminalCapabilities{ColorMode: ColorAlways}
+	if got := DiagnosticMessage("info", "history input was partially skipped", capabilities); got != "\x1b[2mhistory input was partially skipped\x1b[m" {
+		t.Fatalf("informational message = %q", got)
+	}
+	if got := DiagnosticMessage("warning", "history input was partially skipped", capabilities); got != "history input was partially skipped" {
+		t.Fatalf("warning message was unexpectedly styled: %q", got)
 	}
 }
 

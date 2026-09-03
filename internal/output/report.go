@@ -665,7 +665,7 @@ func styleHeading(value string, enabled bool) string {
 	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render(value)
 }
 
-// DiagnosticPrefix styles a warning or error label according to terminal capabilities.
+// DiagnosticPrefix styles a diagnostic label according to terminal capabilities.
 func DiagnosticPrefix(level string, capabilities TerminalCapabilities) string {
 	level = strings.TrimSuffix(strings.TrimSpace(level), ":")
 	label := level + ":"
@@ -678,10 +678,21 @@ func DiagnosticPrefix(level string, capabilities TerminalCapabilities) string {
 		color = "11"
 	case "error":
 		color = "9"
+	case "info":
+		return styleSecondary(label, true)
 	default:
 		return label
 	}
 	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(color)).Render(label)
+}
+
+// DiagnosticMessage de-emphasizes informational diagnostics while leaving
+// warnings and errors readable at the default terminal emphasis.
+func DiagnosticMessage(level, message string, capabilities TerminalCapabilities) string {
+	if strings.EqualFold(strings.TrimSuffix(strings.TrimSpace(level), ":"), "info") {
+		return styleSecondary(message, capabilities.ColorsEnabled())
+	}
+	return message
 }
 
 func styleHeader(value string, enabled bool) string {

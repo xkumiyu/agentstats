@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -46,7 +45,7 @@ Options:
   --codex-home PATH Read a specific Codex home
   --color MODE      auto, always, or never (human report only)
   --group-by UNIT   turn or session
-  --verbose         Show input warning details
+  --verbose         Show input diagnostic details
   --strict-input    Exit non-zero when input records are skipped
   --json            Emit JSON
   --help            Show this help
@@ -61,7 +60,7 @@ Options:
   --codex-home PATH Read a specific Codex home
   --color MODE      auto, always, or never (human report only)
   --layer LAYER     effective, runtime, or model
-  --verbose         Show input warning details
+  --verbose         Show input diagnostic details
   --strict-input    Exit non-zero when input records are skipped
   --json            Emit JSON
   --help            Show this help
@@ -80,7 +79,7 @@ Options:
   --view VIEW       auto, compact, mode, state, or all (human report only)
   --unused          Show installed skills with no recorded usage
   --root PATH       Scan a skill root (repeatable; only with --unused)
-  --verbose         Show input warning details
+  --verbose         Show input diagnostic details
   --strict-input    Exit non-zero when input records are skipped
   --json            Emit JSON
   --help            Show this help
@@ -174,7 +173,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	unused := flags.Bool("unused", false, "show installed skills with no recorded usage")
 	var roots stringList
 	flags.Var(&roots, "root", "scan a skill root (repeatable; only with --unused)")
-	verbose := flags.Bool("verbose", false, "show input warning details")
+	verbose := flags.Bool("verbose", false, "show input diagnostic details")
 	strictInput := flags.Bool("strict-input", false, "exit non-zero when input records are skipped")
 	jsonOutput := flags.Bool("json", false, "emit JSON")
 	if err := flags.Parse(args[1:]); err != nil {
@@ -324,9 +323,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
+	if !*jsonOutput && len(warnings) > 0 {
+		_, _ = io.WriteString(stderr, "\n")
+	}
 	writeWarnings(stderr, warnings, *verbose, diagnostics.capabilities)
 	if *strictInput && len(warnings) > 0 {
-		diagnostics.errorf("input warnings encountered (--strict-input)")
+		diagnostics.errorf("input diagnostics encountered (--strict-input)")
 		return 1
 	}
 	return 0
@@ -349,12 +351,8 @@ func (d diagnosticWriter) errorf(format string, args ...any) {
 	d.write("error", fmt.Sprintf(format, args...))
 }
 
-func (d diagnosticWriter) warningf(format string, args ...any) {
-	d.write("warning", fmt.Sprintf(format, args...))
-}
-
 func (d diagnosticWriter) write(level, message string) {
-	_, _ = fmt.Fprintf(d.w, "%s %s\n", output.DiagnosticPrefix(level, d.capabilities), message)
+	_, _ = fmt.Fprintf(d.w, "%s %s\n", output.DiagnosticPrefix(level, d.capabilities), output.DiagnosticMessage(level, message, d.capabilities))
 }
 
 func writeWarnings(w io.Writer, warnings []usage.Warning, verbose bool, capabilities ...output.TerminalCapabilities) {
@@ -382,64 +380,51 @@ func writeWarnings(w io.Writer, warnings []usage.Warning, verbose bool, capabili
 		if count <= 0 {
 			count = 1
 		}
+		level := warningDiagnosticLevel(warning)
+		description := warningDescription(warning.Reason)
 		if location == "" {
-			diagnostics.warningf("%s%s (%s)", cleanWarningValue(warning.Reason), typeSuffix, formatWarningCount(count))
+			diagnostics.write(level, fmt.Sprintf("%s%s (%s)", description, typeSuffix, formatWarningCount(count)))
 		} else {
-			diagnostics.warningf("%s%s at %s (%s)", cleanWarningValue(warning.Reason), typeSuffix, location, formatWarningCount(count))
+			diagnostics.write(level, fmt.Sprintf("%s%s at %s (%s)", description, typeSuffix, location, formatWarningCount(count)))
 		}
 	}
 }
 
 type warningSummary struct {
-	total     int
 	records   int
 	readFiles int
 	files     map[string]struct{}
-	reasons   map[string]int
-	types     map[string]map[string]int
 }
 
 func writeWarningSummary(diagnostics diagnosticWriter, warnings []usage.Warning) {
-	summary := summarizeWarnings(warnings)
-	reasons := make([]string, 0, len(summary.reasons))
-	for reason := range summary.reasons {
-		reasons = append(reasons, reason)
-	}
-	sort.Strings(reasons)
-	details := make([]string, 0, len(reasons))
-	for _, reason := range reasons {
-		typeCounts := summary.types[reason]
-		if len(typeCounts) == 0 {
-			details = append(details, cleanWarningValue(reason)+"="+formatWarningCount(summary.reasons[reason]))
+	for _, level := range []string{"warning", "info"} {
+		filtered := warningsForDiagnosticLevel(warnings, level)
+		if len(filtered) == 0 {
 			continue
 		}
-		types := make([]string, 0, len(typeCounts))
-		for typ := range typeCounts {
-			types = append(types, typ)
-		}
-		sort.Strings(types)
-		items := make([]string, 0, len(types))
-		for _, typ := range types {
-			items = append(items, cleanWarningValue(typ)+"="+formatWarningCount(typeCounts[typ]))
-		}
-		details = append(details, cleanWarningValue(reason)+": "+strings.Join(items, ", "))
-	}
-
-	fileCount := len(summary.files)
-	fileLabel := warningFileLabel(fileCount)
-	detailText := strings.Join(details, ", ")
-	switch {
-	case summary.records > 0 && summary.readFiles > 0:
-		diagnostics.warningf("skipped %s %s across %s %s; could not read %s %s (%s); use --verbose to show details", formatWarningCount(summary.records), warningRecordLabel(summary.records), formatWarningCount(fileCount), fileLabel, formatWarningCount(summary.readFiles), warningFileLabel(summary.readFiles), detailText)
-	case summary.readFiles > 0:
-		diagnostics.warningf("could not read %s %s (%s); use --verbose to show details", formatWarningCount(summary.readFiles), warningFileLabel(summary.readFiles), detailText)
-	default:
-		diagnostics.warningf("skipped %s %s across %s %s (%s); use --verbose to show details", formatWarningCount(summary.total), warningRecordLabel(summary.total), formatWarningCount(fileCount), fileLabel, detailText)
+		writeWarningSummaryForLevel(diagnostics, filtered, level)
 	}
 }
 
+func writeWarningSummaryForLevel(diagnostics diagnosticWriter, warnings []usage.Warning, level string) {
+	summary := summarizeWarnings(warnings)
+
+	fileCount := len(summary.files)
+	fileLabel := warningFileLabel(fileCount)
+	message := ""
+	switch {
+	case summary.records > 0 && summary.readFiles > 0:
+		message = fmt.Sprintf("skipped %s %s across %s %s; could not read %s %s", formatWarningCount(summary.records), warningRecordLabel(summary.records), formatWarningCount(fileCount), fileLabel, formatWarningCount(summary.readFiles), warningFileLabel(summary.readFiles))
+	case summary.readFiles > 0:
+		message = fmt.Sprintf("could not read %s %s", formatWarningCount(summary.readFiles), warningFileLabel(summary.readFiles))
+	default:
+		message = fmt.Sprintf("skipped %s %s across %s %s", formatWarningCount(summary.records), warningRecordLabel(summary.records), formatWarningCount(fileCount), fileLabel)
+	}
+	diagnostics.write(level, message+"; use --verbose to show details")
+}
+
 func summarizeWarnings(warnings []usage.Warning) warningSummary {
-	summary := warningSummary{files: make(map[string]struct{}), reasons: make(map[string]int), types: make(map[string]map[string]int)}
+	summary := warningSummary{files: make(map[string]struct{})}
 	for _, warning := range warnings {
 		count := warning.Count
 		if count <= 0 {
@@ -448,22 +433,51 @@ func summarizeWarnings(warnings []usage.Warning) warningSummary {
 		if warning.Reason == "read_file" {
 			summary.readFiles += count
 		} else {
-			summary.total += count
 			summary.records += count
 		}
 		if warning.Path != "" {
 			summary.files[warning.Path] = struct{}{}
 		}
-		reason := strings.TrimSpace(warning.Reason)
-		summary.reasons[reason] += count
-		if typ := strings.TrimSpace(warning.Type); typ != "" {
-			if summary.types[reason] == nil {
-				summary.types[reason] = make(map[string]int)
-			}
-			summary.types[reason][typ] += count
-		}
 	}
 	return summary
+}
+
+func warningsForDiagnosticLevel(warnings []usage.Warning, level string) []usage.Warning {
+	filtered := make([]usage.Warning, 0, len(warnings))
+	for _, warning := range warnings {
+		if warningDiagnosticLevel(warning) == level {
+			filtered = append(filtered, warning)
+		}
+	}
+	return filtered
+}
+
+func warningDiagnosticLevel(warning usage.Warning) string {
+	switch strings.TrimSpace(warning.Reason) {
+	case "large_line", "empty_line":
+		return "info"
+	default:
+		return "warning"
+	}
+}
+
+func warningDescription(reason string) string {
+	switch strings.TrimSpace(reason) {
+	case "large_line":
+		return "skipped oversized history record"
+	case "empty_line":
+		return "skipped empty history line"
+	case "malformed_json":
+		return "skipped malformed JSON record"
+	case "unknown_type":
+		return "skipped unknown record type"
+	case "invalid_timestamp":
+		return "record has an invalid timestamp"
+	case "read_file":
+		return "could not read file"
+	default:
+		return cleanWarningValue(reason)
+	}
 }
 
 func warningRecordLabel(count int) string {
