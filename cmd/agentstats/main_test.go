@@ -217,7 +217,7 @@ func TestRunHelpIsScopedToCommand(t *testing.T) {
 	}{
 		{command: "stats", want: []string{"Usage: agentstats stats [options]", "--days", "--group-by"}, omit: []string{"--layer", "--strict"}},
 		{command: "tools", want: []string{"Usage: agentstats tools [options]", "--days", "--layer"}, omit: []string{"--group-by", "--strict"}},
-		{command: "skills", want: []string{"Usage: agentstats skills [options]", "--days", "--group-by", "--strict", "--unused", "--root"}, omit: []string{"--layer"}},
+		{command: "skills", want: []string{"Usage: agentstats skills [options]", "--days", "--group-by", "--strict", "--unused", "--root", "--view"}, omit: []string{"--layer"}},
 	} {
 		stdout.Reset()
 		stderr.Reset()
@@ -541,6 +541,16 @@ func TestRunRejectsInvalidArguments(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
+	if code := run([]string{"skills", "--view", "invalid"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "invalid --view") {
+		t.Fatalf("invalid view exit=%d stderr=%s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"tools", "--view", "mode"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "--view is only valid for skills") {
+		t.Fatalf("tools view exit=%d stderr=%s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
 	if code := run([]string{"tools", "--group-by", "session"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "only valid for stats or skills") {
 		t.Fatalf("tools group-by exit=%d stderr=%s", code, stderr.String())
 	}
@@ -564,6 +574,39 @@ func TestRunRejectsInvalidArguments(t *testing.T) {
 	missingRoot := filepath.Join(t.TempDir(), "missing")
 	if code := run([]string{"skills", "--unused", "--root", missingRoot, "--codex-home", testHome(t), "--json"}, &stdout, &stderr); code == 0 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "scan skill roots") {
 		t.Fatalf("missing root exit=%d stdout=%q stderr=%s", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunSkillsViewOptionAndAutoContext(t *testing.T) {
+	home := testHome(t)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"skills", "--codex-home", home, "--color", "never"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("auto view exit=%d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "View: auto (selected: mode)") {
+		t.Fatalf("auto view was not reported:\n%s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"skills", "--codex-home", home, "--view", "state", "--color", "never"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("state view exit=%d stderr=%s", code, stderr.String())
+	}
+	for _, want := range []string{"View: state", "Confirmed", "Inferred", "Unconfirmed", "Last Used"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("state view missing %q:\n%s", want, stdout.String())
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"skills", "--codex-home", home, "--view", "all", "--color", "never"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("all view exit=%d stderr=%s", code, stderr.String())
+	}
+	for _, want := range []string{"View: all", "ACTIVATION MODE", "EVIDENCE STATE", "Explicit", "Confirmed", "Last Used"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("all view missing %q:\n%s", want, stdout.String())
+		}
 	}
 }
 

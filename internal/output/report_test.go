@@ -187,6 +187,104 @@ func TestSkillReportPrioritizesReadableNames(t *testing.T) {
 	}
 }
 
+func TestSkillUsageViewsShowEffectiveView(t *testing.T) {
+	ctx := ReportContext{Agent: "codex", Period: "all time", Location: time.UTC}
+	wideReport := sampleReport()
+	wideReport.Skills[0].Name = "report"
+	tests := []struct {
+		name   string
+		view   SkillUsageView
+		width  int
+		report aggregate.Report
+		want   []string
+		omit   []string
+	}{
+		{
+			name:   "auto compact",
+			view:   SkillUsageViewAuto,
+			width:  60,
+			report: sampleReport(),
+			want:   []string{"View: auto (selected: compact)", "Skill", "Total"},
+			omit:   []string{"Explicit", "Confirmed"},
+		},
+		{
+			name:   "auto mode",
+			view:   SkillUsageViewAuto,
+			width:  80,
+			report: sampleReport(),
+			want:   []string{"View: auto (selected: mode)", "Explicit", "Implicit", "Unknown", "Total"},
+			omit:   []string{"Confirmed", "Last Used"},
+		},
+		{
+			name:   "auto all",
+			view:   SkillUsageViewAuto,
+			width:  120,
+			report: wideReport,
+			want:   []string{"View: auto (selected: all)", "Explicit", "Confirmed", "Inferred", "Unconfirmed", "Last Used"},
+		},
+		{
+			name:   "explicit mode",
+			view:   SkillUsageViewMode,
+			width:  80,
+			report: sampleReport(),
+			want:   []string{"View: mode", "Explicit", "Implicit", "Unknown", "Total"},
+			omit:   []string{"Confirmed", "Last Used"},
+		},
+		{
+			name:   "explicit state",
+			view:   SkillUsageViewState,
+			width:  80,
+			report: sampleReport(),
+			want:   []string{"View: state", "Confirmed", "Inferred", "Unconfirmed", "Total", "Last Used"},
+			omit:   []string{"Explicit", "Implicit", "Unknown"},
+		},
+		{
+			name:   "explicit all",
+			view:   SkillUsageViewAll,
+			width:  80,
+			report: sampleReport(),
+			want:   []string{"View: all", "ACTIVATION MODE", "EVIDENCE STATE", "Explicit", "Confirmed", "Last Used"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := RenderHuman("skills", ctxWithSkillUsageView(ctx, tt.view), tt.report, TerminalCapabilities{Width: tt.width, ColorMode: ColorNever})
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("report does not contain %q:\n%s", want, got)
+				}
+			}
+			for _, omit := range tt.omit {
+				if strings.Contains(got, omit) {
+					t.Errorf("report contains %q:\n%s", omit, got)
+				}
+			}
+			for _, line := range strings.Split(strings.TrimRight(got, "\n"), "\n") {
+				if lipgloss.Width(line) > tt.width {
+					t.Errorf("line width %d exceeds %d: %q", lipgloss.Width(line), tt.width, line)
+				}
+			}
+		})
+	}
+}
+
+func ctxWithSkillUsageView(ctx ReportContext, view SkillUsageView) ReportContext {
+	ctx.SkillUsageView = view
+	return ctx
+}
+
+func TestSkillUsageViewValidation(t *testing.T) {
+	for _, view := range []SkillUsageView{SkillUsageViewAuto, SkillUsageViewCompact, SkillUsageViewMode, SkillUsageViewState, SkillUsageViewAll} {
+		if !view.Valid() {
+			t.Errorf("%q should be valid", view)
+		}
+	}
+	if SkillUsageView("invalid").Valid() {
+		t.Fatal("invalid skill usage view accepted")
+	}
+}
+
 func TestRenderHumanAlwaysColorAndCompactEllipsis(t *testing.T) {
 	ctx := ReportContext{Agent: "codex", Period: "all time", Layer: usage.LayerEffective}
 	colored := RenderHuman("skills", ctx, sampleReport(), TerminalCapabilities{Width: 120, ColorMode: ColorAlways})

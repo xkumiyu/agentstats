@@ -32,6 +32,18 @@ agentstats skills --group-by session
 agentstats skills --strict
 ```
 
+人間向けのSkill利用表は、`--view`で表示内容を切り替えられます。
+
+```sh
+agentstats skills --view mode
+agentstats skills --view state
+agentstats skills --view all
+```
+
+既定の`--view auto`は端末幅に応じて`compact`、`mode`、`all`を選び、
+context行に`View: auto (selected: mode)`のような形式で実際に選ばれたviewを表示します。`mode`は起動方法の証拠、
+`state`は証拠の状態と`Last Used`、明示した`all`は両方の表を分けて表示します。
+
 機械可読な出力が必要な場合は`--json`を指定します。
 
 ## 出力例

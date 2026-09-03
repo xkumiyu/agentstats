@@ -44,6 +44,21 @@ const (
 	SkillViewUnused SkillView = "unused"
 )
 
+// SkillUsageView selects the human-readable Skill usage table layout.
+type SkillUsageView string
+
+const (
+	SkillUsageViewAuto    SkillUsageView = "auto"
+	SkillUsageViewCompact SkillUsageView = "compact"
+	SkillUsageViewMode    SkillUsageView = "mode"
+	SkillUsageViewState   SkillUsageView = "state"
+	SkillUsageViewAll     SkillUsageView = "all"
+)
+
+func (v SkillUsageView) Valid() bool {
+	return v == SkillUsageViewAuto || v == SkillUsageViewCompact || v == SkillUsageViewMode || v == SkillUsageViewState || v == SkillUsageViewAll
+}
+
 var ansiSequenceRE = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
 
 // DetectCapabilities gets terminal information without writing to the output.
@@ -76,15 +91,16 @@ func (c TerminalCapabilities) ColorsEnabled() bool {
 }
 
 type ReportContext struct {
-	Agent         string
-	Period        string
-	Layer         usage.ToolLayer
-	SkillGroupBy  aggregate.SkillGroupBy
-	SkillView     SkillView
-	SkillRoots    []string
-	Strict        bool
-	ReferenceTime time.Time
-	Location      *time.Location
+	Agent          string
+	Period         string
+	Layer          usage.ToolLayer
+	SkillGroupBy   aggregate.SkillGroupBy
+	SkillView      SkillView
+	SkillUsageView SkillUsageView
+	SkillRoots     []string
+	Strict         bool
+	ReferenceTime  time.Time
+	Location       *time.Location
 }
 
 func (c ReportContext) agent() string {
@@ -119,13 +135,17 @@ func RenderHuman(kind string, ctx ReportContext, report aggregate.Report, capabi
 	if ctx.SkillView == SkillViewUnused && len(ctx.SkillRoots) == 0 {
 		ctx.SkillRoots = append([]string{}, report.UnusedRoots...)
 	}
+	effectiveSkillUsageView := SkillUsageView("")
+	if kind == "skills" && ctx.SkillView != SkillViewUnused {
+		effectiveSkillUsageView = selectSkillUsageView(ctx.SkillUsageView, report.Skills, width)
+	}
 	styled := capabilities.ColorsEnabled()
 	heading := reportHeading(kind, ctx)
 	if heading == "" {
 		return ""
 	}
 	lines := []string{styleHeading(heading, styled)}
-	lines = append(lines, contextLines(kind, ctx, styled)...)
+	lines = append(lines, contextLines(kind, ctx, effectiveSkillUsageView, styled)...)
 	switch kind {
 	case "stats":
 		lines = append(lines, "", renderStats(report.Overview, width, styled))
@@ -135,7 +155,7 @@ func RenderHuman(kind string, ctx ReportContext, report aggregate.Report, capabi
 		if ctx.SkillView == SkillViewUnused {
 			lines = append(lines, "", renderUnusedSkills(report.UnusedSkills, report.InstalledSkills, width, styled), "", styleFooter(unusedSkillFooter(report.UnusedSkills, report.InstalledSkills), styled))
 		} else {
-			lines = append(lines, "", renderSkills(report.Skills, ctx, width, styled), "", styleFooter(skillFooter(report.Skills), styled))
+			lines = append(lines, "", renderSkills(report.Skills, ctx, effectiveSkillUsageView, width, styled), "", styleFooter(skillFooter(report.Skills), styled))
 		}
 	default:
 		return ""
@@ -159,7 +179,7 @@ func reportHeading(kind string, ctx ReportContext) string {
 	}
 }
 
-func contextLines(kind string, ctx ReportContext, styled bool) []string {
+func contextLines(kind string, ctx ReportContext, effectiveSkillUsageView SkillUsageView, styled bool) []string {
 	parts := []string{"Agent: " + ctx.agent(), "Period: " + ctx.period()}
 	switch kind {
 	case "tools":
@@ -182,6 +202,7 @@ func contextLines(kind string, ctx ReportContext, styled bool) []string {
 		}
 		parts = append(parts, "Group by: "+string(contextSkillGroupBy(ctx)))
 		parts = append(parts, "Strict: "+strconv.FormatBool(ctx.Strict))
+		parts = append(parts, "View: "+skillUsageViewLabel(ctx.SkillUsageView, effectiveSkillUsageView))
 	case "stats":
 		parts = append(parts, "Skill grouping: "+string(contextSkillGroupBy(ctx)))
 	}
@@ -197,6 +218,16 @@ func contextSkillGroupBy(ctx ReportContext) aggregate.SkillGroupBy {
 		return ctx.SkillGroupBy
 	}
 	return aggregate.SkillGroupByTurn
+}
+
+func skillUsageViewLabel(requested, effective SkillUsageView) string {
+	if requested == "" {
+		requested = SkillUsageViewAuto
+	}
+	if requested == SkillUsageViewAuto {
+		return string(requested) + " (selected: " + string(effective) + ")"
+	}
+	return string(effective)
 }
 
 func renderStats(summary aggregate.Overview, width int, styled bool) string {
@@ -275,33 +306,91 @@ func renderTools(rows []aggregate.ToolRow, ctx ReportContext, width int, styled 
 	return strings.Join(lines, "\n")
 }
 
-func renderSkills(rows []aggregate.SkillRow, ctx ReportContext, width int, styled bool) string {
+func selectSkillUsageView(view SkillUsageView, rows []aggregate.SkillRow, width int) SkillUsageView {
+	if view.Valid() && view != SkillUsageViewAuto {
+		return view
+	}
+	if width < 70 {
+		return SkillUsageViewCompact
+	}
+	if width < 100 || width-97 < maxSkillNameContentWidth(rows) {
+		return SkillUsageViewMode
+	}
+	return SkillUsageViewAll
+}
+
+func renderSkills(rows []aggregate.SkillRow, ctx ReportContext, view SkillUsageView, width int, styled bool) string {
 	if len(rows) == 0 {
 		return styleNotice("No skill usage found for the selected period and filter.", styled)
 	}
-	if width < 70 {
-		nameWidth := maxSkillNameWidth(width-9, rows)
-		header := padRight(styleHeader("Skill", styled), nameWidth) + "  " + padLeft(styleHeader("Total", styled), 7)
-		lines := []string{header, tableRule(lipgloss.Width(header), styled)}
-		for _, row := range rows {
-			name := styleIdentity(truncate(safeDisplay(row.Name), nameWidth), styled)
-			lines = append(lines, padRight(name, nameWidth)+"  "+padLeft(formatCount(row.Total), 7))
+	switch view {
+	case SkillUsageViewCompact:
+		return renderSkillCompact(rows, width, styled)
+	case SkillUsageViewMode:
+		return renderSkillMode(rows, width, styled)
+	case SkillUsageViewState:
+		return renderSkillState(rows, ctx, width, styled)
+	case SkillUsageViewAll:
+		if ctx.SkillUsageView == SkillUsageViewAll {
+			return renderSkillAllSections(rows, ctx, width, styled)
 		}
-		return strings.Join(lines, "\n")
+		return renderSkillAllTable(rows, ctx, width, styled)
+	default:
+		return renderSkillMode(rows, width, styled)
 	}
-	// Keep the full Skill identity readable before spending terminal width on
-	// secondary evidence columns. The wide layout is only useful when its name
-	// column can accommodate every row without truncation.
-	if width < 100 || width-97 < maxSkillNameContentWidth(rows) {
-		nameWidth := maxSkillNameWidth(width-39, rows)
-		header := padRight(styleHeader("Skill", styled), nameWidth) + "  " + padLeft(styleHeader("Explicit", styled), 8) + "  " + padLeft(styleHeader("Implicit", styled), 8) + "  " + padLeft(styleHeader("Unknown", styled), 8) + "  " + padLeft(styleHeader("Total", styled), 7)
-		lines := []string{header, tableRule(lipgloss.Width(header), styled)}
-		for _, row := range rows {
-			name := styleIdentity(truncate(safeDisplay(row.Name), nameWidth), styled)
-			lines = append(lines, padRight(name, nameWidth)+"  "+padLeft(formatCount(row.Explicit), 8)+"  "+padLeft(formatCount(row.Implicit), 8)+"  "+padLeft(formatCount(row.Unknown), 8)+"  "+padLeft(formatCount(row.Total), 7))
-		}
-		return strings.Join(lines, "\n")
+}
+
+func renderSkillCompact(rows []aggregate.SkillRow, width int, styled bool) string {
+	nameWidth := maxSkillNameWidth(width-9, rows)
+	header := padRight(styleHeader("Skill", styled), nameWidth) + "  " + padLeft(styleHeader("Total", styled), 7)
+	lines := []string{header, tableRule(lipgloss.Width(header), styled)}
+	for _, row := range rows {
+		name := styleIdentity(truncate(safeDisplay(row.Name), nameWidth), styled)
+		lines = append(lines, padRight(name, nameWidth)+"  "+padLeft(formatCount(row.Total), 7))
 	}
+	return strings.Join(lines, "\n")
+}
+
+func renderSkillMode(rows []aggregate.SkillRow, width int, styled bool) string {
+	if width < 47 {
+		return renderSkillModeDetails(rows, width, styled)
+	}
+	nameWidth := maxSkillNameWidth(width-39, rows)
+	header := padRight(styleHeader("Skill", styled), nameWidth) + "  " + padLeft(styleHeader("Explicit", styled), 8) + "  " + padLeft(styleHeader("Implicit", styled), 8) + "  " + padLeft(styleHeader("Unknown", styled), 8) + "  " + padLeft(styleHeader("Total", styled), 7)
+	lines := []string{header, tableRule(lipgloss.Width(header), styled)}
+	for _, row := range rows {
+		name := styleIdentity(truncate(safeDisplay(row.Name), nameWidth), styled)
+		lines = append(lines, padRight(name, nameWidth)+"  "+padLeft(formatCount(row.Explicit), 8)+"  "+padLeft(formatCount(row.Implicit), 8)+"  "+padLeft(formatCount(row.Unknown), 8)+"  "+padLeft(formatCount(row.Total), 7))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderSkillState(rows []aggregate.SkillRow, ctx ReportContext, width int, styled bool) string {
+	if width < 75 {
+		return renderSkillStateDetails(rows, ctx, width, styled)
+	}
+	nameWidth := maxSkillNameWidth(width-67, rows)
+	header := padRight(styleHeader("Skill", styled), nameWidth) + "  " + padLeft(styleHeader("Confirmed", styled), 9) + "  " + padLeft(styleHeader("Inferred", styled), 8) + "  " + padLeft(styleHeader("Unconfirmed", styled), 11) + "  " + padLeft(styleHeader("Total", styled), 7) + "  " + padLeft(styleHeader("Last Used", styled), 22)
+	lines := []string{header, tableRule(lipgloss.Width(header), styled)}
+	for _, row := range rows {
+		lastUsed := styleSecondary(formatLocalTime(row.LastUsed, ctx.Location), styled)
+		name := styleIdentity(truncate(safeDisplay(row.Name), nameWidth), styled)
+		lines = append(lines, padRight(name, nameWidth)+"  "+padLeft(formatCount(row.Confirmed), 9)+"  "+padLeft(formatCount(row.Inferred), 8)+"  "+padLeft(formatCount(row.Unconfirmed), 11)+"  "+padLeft(formatCount(row.Total), 7)+"  "+padLeft(lastUsed, 22))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderSkillAllSections(rows []aggregate.SkillRow, ctx ReportContext, width int, styled bool) string {
+	return strings.Join([]string{
+		styleHeading("ACTIVATION MODE", styled),
+		renderSkillMode(rows, width, styled),
+		"",
+		styleHeading("EVIDENCE STATE", styled),
+		renderSkillState(rows, ctx, width, styled),
+	}, "\n")
+}
+
+func renderSkillAllTable(rows []aggregate.SkillRow, ctx ReportContext, width int, styled bool) string {
 	nameWidth := maxSkillNameWidth(width-97, rows)
 	header := padRight(styleHeader("Skill", styled), nameWidth) + "  " + padLeft(styleHeader("Explicit", styled), 8) + "  " + padLeft(styleHeader("Implicit", styled), 8) + "  " + padLeft(styleHeader("Unknown", styled), 8) + "  " + padLeft(styleHeader("Confirmed", styled), 9) + "  " + padLeft(styleHeader("Inferred", styled), 8) + "  " + padLeft(styleHeader("Unconfirmed", styled), 11) + "  " + padLeft(styleHeader("Total", styled), 7) + "  " + padLeft(styleHeader("Last Used", styled), 22)
 	lines := []string{header, tableRule(lipgloss.Width(header), styled)}
@@ -311,6 +400,50 @@ func renderSkills(rows []aggregate.SkillRow, ctx ReportContext, width int, style
 		lines = append(lines, padRight(name, nameWidth)+"  "+padLeft(formatCount(row.Explicit), 8)+"  "+padLeft(formatCount(row.Implicit), 8)+"  "+padLeft(formatCount(row.Unknown), 8)+"  "+padLeft(formatCount(row.Confirmed), 9)+"  "+padLeft(formatCount(row.Inferred), 8)+"  "+padLeft(formatCount(row.Unconfirmed), 11)+"  "+padLeft(formatCount(row.Total), 7)+"  "+padLeft(lastUsed, 22))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func renderSkillModeDetails(rows []aggregate.SkillRow, width int, styled bool) string {
+	lines := make([]string, 0, len(rows)*5)
+	for i, row := range rows {
+		if i > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, skillDetailName(row.Name, width, styled))
+		lines = append(lines,
+			skillDetailField("Explicit", formatCount(row.Explicit), styled),
+			skillDetailField("Implicit", formatCount(row.Implicit), styled),
+			skillDetailField("Unknown", formatCount(row.Unknown), styled),
+			skillDetailField("Total", formatCount(row.Total), styled),
+		)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderSkillStateDetails(rows []aggregate.SkillRow, ctx ReportContext, width int, styled bool) string {
+	lines := make([]string, 0, len(rows)*6)
+	for i, row := range rows {
+		if i > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, skillDetailName(row.Name, width, styled))
+		lines = append(lines,
+			skillDetailField("Confirmed", formatCount(row.Confirmed), styled),
+			skillDetailField("Inferred", formatCount(row.Inferred), styled),
+			skillDetailField("Unconfirmed", formatCount(row.Unconfirmed), styled),
+			skillDetailField("Total", formatCount(row.Total), styled),
+			skillDetailField("Last Used", formatLocalTime(row.LastUsed, ctx.Location), styled),
+		)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func skillDetailName(name string, width int, styled bool) string {
+	prefix := "Skill: "
+	return prefix + styleIdentity(truncate(safeDisplay(name), maxInt(1, width-lipgloss.Width(prefix))), styled)
+}
+
+func skillDetailField(label, value string, styled bool) string {
+	return "  " + padRight(styleLabel(label+":", styled), 13) + " " + value
 }
 
 func renderUnusedSkills(rows []skillinventory.InventoryEntry, installed int, width int, styled bool) string {

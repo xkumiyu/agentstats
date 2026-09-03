@@ -77,6 +77,7 @@ Options:
   --color MODE      auto, always, or never (human report only)
   --group-by UNIT   turn or session
   --strict          Count confirmed skill evidence only
+  --view VIEW       auto, compact, mode, state, or all (human report only)
   --unused          Show installed skills with no recorded usage
   --root PATH       Scan a skill root (repeatable; only with --unused)
   --verbose         Show input warning details
@@ -169,6 +170,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	layer := flags.String("layer", string(usage.LayerEffective), "tool layer")
 	groupBy := flags.String("group-by", string(aggregate.SkillGroupByTurn), "skill aggregation unit")
 	strict := flags.Bool("strict", false, "count confirmed skills only")
+	view := flags.String("view", string(output.SkillUsageViewAuto), "skill report view")
 	unused := flags.Bool("unused", false, "show installed skills with no recorded usage")
 	var roots stringList
 	flags.Var(&roots, "root", "scan a skill root (repeatable; only with --unused)")
@@ -214,6 +216,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if kind != "skills" && *strict {
 		diagnostics.errorf("--strict is only valid for skills")
+		return 2
+	}
+	selectedSkillUsageView := output.SkillUsageView(*view)
+	if !selectedSkillUsageView.Valid() {
+		diagnostics.errorf("invalid --view %q (want auto, compact, mode, state, or all)", *view)
+		return 2
+	}
+	if kind != "skills" && selectedSkillUsageView != output.SkillUsageViewAuto {
+		diagnostics.errorf("--view is only valid for skills")
+		return 2
+	}
+	if *unused && selectedSkillUsageView != output.SkillUsageViewAuto {
+		diagnostics.errorf("--view cannot be combined with --unused")
 		return 2
 	}
 	if kind != "skills" && *unused {
@@ -288,7 +303,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if daysSet {
 		period = fmt.Sprintf("last %d days", *days)
 	}
-	context := output.ReportContext{Agent: "codex", Period: period, Layer: selectedLayer, SkillGroupBy: selectedGroupBy, Strict: *strict, ReferenceTime: now, Location: time.Local}
+	context := output.ReportContext{Agent: "codex", Period: period, Layer: selectedLayer, SkillGroupBy: selectedGroupBy, SkillUsageView: selectedSkillUsageView, Strict: *strict, ReferenceTime: now, Location: time.Local}
 	if *unused {
 		context.SkillView = output.SkillViewUnused
 		context.SkillRoots = append([]string{}, inventorySnapshot.Roots...)

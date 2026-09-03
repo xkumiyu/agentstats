@@ -32,6 +32,22 @@ agentstats skills --group-by session
 agentstats skills --strict
 ```
 
+Choose the human-readable Skill usage view when the automatic table layout is
+not the most useful one:
+
+```sh
+agentstats skills --view mode
+agentstats skills --view state
+agentstats skills --view all
+```
+
+The default `--view auto` selects `compact`, `mode`, or `all` from the
+terminal width and reports it as `View: auto (selected: mode)` in the context
+lines. `mode`
+shows activation evidence, `state` shows evidence state and `Last Used`, and
+explicit `all` shows the two tables separately so they remain readable on
+ordinary terminals.
+
 Use `--json` when machine-readable output is needed.
 
 ## Example output
