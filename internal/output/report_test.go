@@ -2,6 +2,7 @@ package output
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -23,13 +24,137 @@ func sampleReport() aggregate.Report {
 func TestRenderHumanPlainReportIsReadable(t *testing.T) {
 	ctx := ReportContext{Agent: "codex", Period: "last 30 days", Layer: usage.LayerEffective, ReferenceTime: time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC), Location: time.FixedZone("JST", 9*60*60)}
 	got := RenderHuman("tools", ctx, sampleReport(), TerminalCapabilities{Width: 120, ColorMode: ColorNever})
-	for _, want := range []string{"AGENTSTATS · CODEX", "Period: last 30 days", "Layer: effective", "Tool", "shell", "56,789", "2026-01-02 12:04 JST", "Total calls: 56,789"} {
+	for _, want := range []string{"TOOL USAGE", "Agent: Codex", "Period: last 30 days", "Layer: effective", "Tool", "shell", "56,789", "2026-01-02 12:04 JST", "1 tool, 56,789 calls total"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("report does not contain %q:\n%s", want, got)
 		}
 	}
+	for _, unwanted := range []string{"AGENTSTATS", "Rows:", " · "} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("report contains obsolete display %q:\n%s", unwanted, got)
+		}
+	}
 	if strings.Contains(got, "\x1b[") {
 		t.Fatalf("plain report contains ANSI: %q", got)
+	}
+}
+
+func TestRenderHumanUsesContentHeadingAndMultilineContext(t *testing.T) {
+	ctx := ReportContext{Agent: "codex", Period: "last 7 days", Layer: usage.LayerRuntime, SkillGroupBy: aggregate.SkillGroupBySession, Strict: true}
+
+	tests := []struct {
+		kind string
+		want []string
+	}{
+		{kind: "stats", want: []string{"USAGE OVERVIEW", "Agent: Codex", "Period: last 7 days", "Skill grouping: session"}},
+		{kind: "tools", want: []string{"TOOL USAGE", "Agent: Codex", "Period: last 7 days", "Layer: runtime"}},
+		{kind: "skills", want: []string{"SKILL USAGE", "Agent: Codex", "Period: last 7 days", "Group by: session", "Strict: true"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.kind, func(t *testing.T) {
+			got := RenderHuman(tt.kind, ctx, sampleReport(), TerminalCapabilities{Width: 120, ColorMode: ColorNever})
+			lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+			for i, want := range tt.want {
+				if i >= len(lines) || lines[i] != want {
+					t.Fatalf("line %d = %q, want %q:\n%s", i, lineAt(lines, i), want, got)
+				}
+			}
+			if strings.Contains(got, " · ") {
+				t.Fatalf("context uses a middle-dot separator: %q", got)
+			}
+		})
+	}
+}
+
+func lineAt(lines []string, index int) string {
+	if index < 0 || index >= len(lines) {
+		return "<missing>"
+	}
+	return lines[index]
+}
+
+func TestRenderHumanFootersUseDomainTerms(t *testing.T) {
+	ctx := ReportContext{Agent: "codex", Period: "all time", Layer: usage.LayerEffective}
+	tests := []struct {
+		name   string
+		kind   string
+		report aggregate.Report
+		want   string
+	}{
+		{name: "one tool", kind: "tools", report: sampleReport(), want: "1 tool, 56,789 calls total"},
+		{name: "multiple tools", kind: "tools", report: aggregate.Report{Tools: []aggregate.ToolRow{{Name: "shell", Calls: 1}, {Name: "web", Calls: 2}}}, want: "2 tools, 3 calls total"},
+		{name: "no tools", kind: "tools", report: aggregate.Report{}, want: "0 tools, 0 calls total"},
+		{name: "one skill", kind: "skills", report: sampleReport(), want: "1 skill, 3 uses total"},
+		{name: "multiple skills", kind: "skills", report: aggregate.Report{Skills: []aggregate.SkillRow{{Name: "one", Total: 1}, {Name: "two", Total: 2}}}, want: "2 skills, 3 uses total"},
+		{name: "no skills", kind: "skills", report: aggregate.Report{}, want: "0 skills, 0 uses total"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := RenderHuman(tt.kind, ctx, tt.report, TerminalCapabilities{Width: 120, ColorMode: ColorNever})
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("report does not contain %q:\n%s", tt.want, got)
+			}
+			if strings.Contains(got, "Rows:") || strings.Contains(got, " · ") {
+				t.Fatalf("report contains obsolete footer syntax:\n%s", got)
+			}
+		})
+	}
+}
+
+func TestRenderHumanKeepsRequiredFieldsAtSupportedWidths(t *testing.T) {
+	ctx := ReportContext{Agent: "codex", Period: "last 30 days", Layer: usage.LayerEffective, SkillGroupBy: aggregate.SkillGroupByTurn}
+	tests := []struct {
+		kind     string
+		required []string
+	}{
+		{kind: "stats", required: []string{"USAGE OVERVIEW", "Agent: Codex", "Period: last 30 days", "Sessions"}},
+		{kind: "tools", required: []string{"TOOL USAGE", "Agent: Codex", "Period: last 30 days", "Tool", "Calls"}},
+		{kind: "skills", required: []string{"SKILL USAGE", "Agent: Codex", "Period: last 30 days", "Skill", "Total"}},
+	}
+
+	for _, tt := range tests {
+		for _, width := range []int{60, 80, 120} {
+			t.Run(tt.kind+"/"+strconv.Itoa(width), func(t *testing.T) {
+				got := RenderHuman(tt.kind, ctx, sampleReport(), TerminalCapabilities{Width: width, ColorMode: ColorNever})
+				for _, want := range tt.required {
+					if !strings.Contains(got, want) {
+						t.Errorf("report does not contain %q:\n%s", want, got)
+					}
+				}
+				for _, line := range strings.Split(strings.TrimRight(got, "\n"), "\n") {
+					if lipgloss.Width(line) > width {
+						t.Errorf("line width %d exceeds %d: %q", lipgloss.Width(line), width, line)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestRenderHumanEmptyStateExplainsNoUsage(t *testing.T) {
+	ctx := ReportContext{Agent: "codex", Period: "last 1 day", Layer: usage.LayerEffective}
+
+	stats := RenderHuman("stats", ctx, aggregate.Report{}, TerminalCapabilities{Width: 80, ColorMode: ColorNever})
+	for _, want := range []string{"USAGE OVERVIEW", "Agent: Codex", "No usage found for the selected period."} {
+		if !strings.Contains(stats, want) {
+			t.Errorf("empty stats does not contain %q:\n%s", want, stats)
+		}
+	}
+
+	tools := RenderHuman("tools", ctx, aggregate.Report{}, TerminalCapabilities{Width: 80, ColorMode: ColorNever})
+	for _, want := range []string{"No tool usage found for the selected period and layer.", "0 tools, 0 calls total"} {
+		if !strings.Contains(tools, want) {
+			t.Errorf("empty tools does not contain %q:\n%s", want, tools)
+		}
+	}
+
+	skills := RenderHuman("skills", ctx, aggregate.Report{}, TerminalCapabilities{Width: 80, ColorMode: ColorNever})
+	for _, want := range []string{"No skill usage found for the selected period and filter.", "0 skills, 0 uses total"} {
+		if !strings.Contains(skills, want) {
+			t.Errorf("empty skills does not contain %q:\n%s", want, skills)
+		}
 	}
 }
 
@@ -83,6 +208,94 @@ func TestRenderHumanAlwaysColorAndCompactEllipsis(t *testing.T) {
 			t.Errorf("wide line too wide: %d: %q", lipgloss.Width(line), line)
 		}
 	}
+}
+
+func TestRenderHumanStylesTableHeadersAndIdentity(t *testing.T) {
+	ctx := ReportContext{Agent: "codex", Period: "all time", Layer: usage.LayerEffective}
+	report := aggregate.Report{Skills: []aggregate.SkillRow{{Name: "report", Explicit: 1, Total: 1}}}
+	got := RenderHuman("skills", ctx, report, TerminalCapabilities{Width: 120, ColorMode: ColorAlways})
+	header := ""
+	headerIndex := -1
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "Skill") && strings.Contains(line, "Explicit") {
+			header = line
+			break
+		}
+	}
+	if header == "" {
+		t.Fatalf("skill table header not found:\n%s", got)
+	}
+	lines := strings.Split(got, "\n")
+	for i, line := range lines {
+		if line == header {
+			headerIndex = i
+			break
+		}
+	}
+	for _, label := range []string{"Skill", "Explicit", "Implicit", "Unknown", "Confirmed", "Inferred", "Unconfirmed", "Total", "Last Used"} {
+		want := "\x1b[1;93m" + label + "\x1b[m"
+		if !strings.Contains(header, want) {
+			t.Errorf("table header %q is not yellow and bold: %q", label, header)
+		}
+	}
+	if headerIndex < 0 || headerIndex+1 >= len(lines) || !strings.Contains(lines[headerIndex+1], "──") || !strings.Contains(lines[headerIndex+1], "\x1b[2m") {
+		t.Fatalf("table header separator is missing or not faint: %q", lineAt(lines, headerIndex+1))
+	}
+	if !strings.Contains(got, "\x1b[96mreport\x1b[m") {
+		t.Fatalf("first column identity is not cyan: %q", got)
+	}
+	if strings.Contains(header, "\x1b[1;4m") {
+		t.Fatalf("table header still uses underline: %q", header)
+	}
+}
+
+func TestRenderHumanKeepsTableStatusCellsUnstyled(t *testing.T) {
+	ctx := ReportContext{Agent: "codex", Period: "all time", Layer: usage.LayerEffective, Location: time.UTC}
+	noFailure := aggregate.Report{Tools: []aggregate.ToolRow{{Name: "shell", Calls: 1}}}
+	withFailure := aggregate.Report{Tools: []aggregate.ToolRow{{Name: "shell", Calls: 1, Failures: 1}}}
+	plain := TerminalCapabilities{Width: 120, ColorMode: ColorAlways}
+
+	base := RenderHuman("tools", ctx, noFailure, plain)
+	failure := RenderHuman("tools", ctx, withFailure, plain)
+	if ansiCount(base) == 0 {
+		t.Fatalf("styled report has no ANSI sequences: %q", base)
+	}
+	if ansiCount(failure) != ansiCount(base) {
+		t.Fatalf("failure cell added styling: base=%d failure=%d\n%s", ansiCount(base), ansiCount(failure), failure)
+	}
+
+	confirmed := aggregate.Report{Skills: []aggregate.SkillRow{{Name: "report", Confirmed: 1, Total: 1}}}
+	uncertain := aggregate.Report{Skills: []aggregate.SkillRow{{Name: "report", Unknown: 1, Inferred: 1, Unconfirmed: 1, Total: 1}}}
+	confirmedOutput := RenderHuman("skills", ctx, confirmed, plain)
+	uncertainOutput := RenderHuman("skills", ctx, uncertain, plain)
+	if ansiCount(uncertainOutput) != ansiCount(confirmedOutput) {
+		t.Fatalf("uncertain evidence added cell styling: confirmed=%d uncertain=%d\n%s", ansiCount(confirmedOutput), ansiCount(uncertainOutput), uncertainOutput)
+	}
+}
+
+func TestDiagnosticPrefixUsesSemanticColor(t *testing.T) {
+	tests := []struct {
+		name         string
+		level        string
+		capabilities TerminalCapabilities
+		want         string
+	}{
+		{name: "warning", level: "warning", capabilities: TerminalCapabilities{ColorMode: ColorAlways}, want: "\x1b[1;93mwarning:\x1b[m"},
+		{name: "error", level: "error", capabilities: TerminalCapabilities{ColorMode: ColorAlways}, want: "\x1b[1;91merror:\x1b[m"},
+		{name: "never", level: "warning", capabilities: TerminalCapabilities{ColorMode: ColorNever}, want: "warning:"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := DiagnosticPrefix(tt.level, tt.capabilities); got != tt.want {
+				t.Fatalf("DiagnosticPrefix(%q) = %q, want %q", tt.level, got, tt.want)
+			}
+		})
+	}
+}
+
+func ansiCount(value string) int {
+	return len(ansiSequenceRE.FindAllString(value, -1))
 }
 
 func TestColorModeRespectsTTYAndNOColor(t *testing.T) {

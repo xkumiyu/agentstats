@@ -43,10 +43,13 @@ func TestRunCommandsAndMachineOutput(t *testing.T) {
 	if code := run([]string{"stats", "--codex-home", home, "--color", "never"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("stats exit=%d stderr=%s", code, stderr.String())
 	}
-	for _, want := range []string{"AGENTSTATS · CODEX", "Sessions", "User Prompts", "Tool Calls", "Skill Uses"} {
+	for _, want := range []string{"USAGE OVERVIEW", "Agent: Codex", "Sessions", "User Prompts", "Tool Calls", "Skill Uses"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("stats missing %q: %s", want, stdout.String())
 		}
+	}
+	if strings.Contains(stdout.String(), "AGENTSTATS") || strings.Contains(stdout.String(), " · ") {
+		t.Fatalf("stats contains obsolete display: %s", stdout.String())
 	}
 	if strings.Contains(stdout.String(), "\x1b[") {
 		t.Fatal("plain report contains ANSI")
@@ -67,7 +70,7 @@ func TestRunCommandsAndMachineOutput(t *testing.T) {
 		t.Fatalf("tool_calls=%v", value["tool_calls"])
 	}
 	stdout.Reset()
-	if code := run([]string{"tools", "--codex-home", home, "--color", "never"}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "shell") || !strings.Contains(stdout.String(), "Total calls: 1") {
+	if code := run([]string{"tools", "--codex-home", home, "--color", "never"}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "shell") || !strings.Contains(stdout.String(), "1 tool, 1 call total") {
 		t.Fatalf("tools exit=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 	stdout.Reset()
@@ -415,5 +418,65 @@ func TestRunStrictInputReturnsNonZeroAfterRenderingReport(t *testing.T) {
 	}
 	if stdout.Len() == 0 || !strings.Contains(stderr.String(), "strict-input") {
 		t.Fatalf("strict-input diagnostics missing: stdout=%s stderr=%s", stdout.String(), stderr.String())
+	}
+}
+
+func TestRunStylesDiagnosticPrefixesOnly(t *testing.T) {
+	home := testHome(t)
+	path := filepath.Join(home, "sessions", "2026", "one.jsonl")
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("not-json\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"stats", "--codex-home", home, "--color", "always"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	got := stderr.String()
+	warningPrefix := "\x1b[1;93mwarning:\x1b[m "
+	if !strings.HasPrefix(got, warningPrefix) {
+		t.Fatalf("warning prefix is not yellow and bold: %q", got)
+	}
+	if strings.Contains(strings.TrimPrefix(got, warningPrefix), "\x1b[") {
+		t.Fatalf("warning body is styled with its prefix: %q", got)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"stats", "--days", "0", "--color", "always"}, &stdout, &stderr); code == 0 {
+		t.Fatalf("invalid days unexpectedly succeeded: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if got := stderr.String(); !strings.Contains(got, "\x1b[1;91merror:\x1b[m --days must be at least 1") {
+		t.Fatalf("error prefix is not red and bold: %q", got)
+	}
+}
+
+func TestRunKeepsDiagnosticsPlainForJSON(t *testing.T) {
+	home := testHome(t)
+	path := filepath.Join(home, "sessions", "2026", "one.jsonl")
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("not-json\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"stats", "--codex-home", home, "--json", "--color", "always"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "\x1b[") || strings.Contains(stderr.String(), "\x1b[") {
+		t.Fatalf("JSON diagnostics contain ANSI: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }

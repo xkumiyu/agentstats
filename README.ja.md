@@ -34,6 +34,21 @@ agentstats skills --strict
 
 機械可読な出力が必要な場合は`--json`を指定します。
 
+## 出力例
+
+```text
+TOOL USAGE
+Agent: Codex
+Period: all time
+Layer: effective
+
+Tool       Calls  Failures  Last Used
+────────────────────────────────────────────────────
+shell          42         0  2026-09-03 14:20 JST
+
+1 tool, 42 calls total
+```
+
 ## Skill集計の見方
 
 `agentstats skills`は、Skillごとに「起動方法」と「証拠の状態」という2つの軸を表示します。

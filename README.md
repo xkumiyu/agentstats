@@ -34,6 +34,21 @@ agentstats skills --strict
 
 Use `--json` when machine-readable output is needed.
 
+## Example output
+
+```text
+TOOL USAGE
+Agent: Codex
+Period: all time
+Layer: effective
+
+Tool       Calls  Failures  Last Used
+────────────────────────────────────────────────────
+shell          42         0  2026-09-03 14:20 JST
+
+1 tool, 42 calls total
+```
+
 ## Understanding skill usage
 
 `agentstats skills` reports two independent dimensions: activation mode and evidence state.

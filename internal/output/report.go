@@ -77,10 +77,11 @@ type ReportContext struct {
 }
 
 func (c ReportContext) agent() string {
-	if strings.TrimSpace(c.Agent) == "" {
-		return "CODEX"
+	value := strings.TrimSpace(c.Agent)
+	if value == "" || strings.EqualFold(value, "codex") {
+		return "Codex"
 	}
-	return strings.ToUpper(c.Agent)
+	return value
 }
 
 func (c ReportContext) agentID() string {
@@ -105,23 +106,38 @@ func RenderHuman(kind string, ctx ReportContext, report aggregate.Report, capabi
 		width = 80
 	}
 	styled := capabilities.ColorsEnabled()
-	title := "AGENTSTATS · " + ctx.agent()
-	lines := []string{styleTitle(title, styled), styleContext(contextLine(kind, ctx), styled)}
+	heading := reportHeading(kind)
+	if heading == "" {
+		return ""
+	}
+	lines := []string{styleHeading(heading, styled)}
+	lines = append(lines, contextLines(kind, ctx, styled)...)
 	switch kind {
 	case "stats":
 		lines = append(lines, "", renderStats(report.Overview, width, styled))
 	case "tools":
-		lines = append(lines, "", styleHeading("TOOL USAGE", styled), renderTools(report.Tools, ctx, width, styled), "", styleFooter(fmt.Sprintf("Rows: %s · Total calls: %s", formatCount(len(report.Tools)), formatCount(totalToolCalls(report.Tools))), styled))
+		lines = append(lines, "", renderTools(report.Tools, ctx, width, styled), "", styleFooter(toolFooter(report.Tools), styled))
 	case "skills":
-		lines = append(lines, "", styleHeading("SKILL USAGE", styled), renderSkills(report.Skills, ctx, width, styled), "", styleFooter(fmt.Sprintf("Rows: %s · Total uses: %s", formatCount(len(report.Skills)), formatCount(totalSkillUses(report.Skills))), styled))
-	default:
-		return ""
+		lines = append(lines, "", renderSkills(report.Skills, ctx, width, styled), "", styleFooter(skillFooter(report.Skills), styled))
 	}
 	return strings.TrimRight(strings.Join(lines, "\n"), "\n") + "\n"
 }
 
-func contextLine(kind string, ctx ReportContext) string {
-	parts := []string{"Period: " + ctx.period()}
+func reportHeading(kind string) string {
+	switch kind {
+	case "stats":
+		return "USAGE OVERVIEW"
+	case "tools":
+		return "TOOL USAGE"
+	case "skills":
+		return "SKILL USAGE"
+	default:
+		return ""
+	}
+}
+
+func contextLines(kind string, ctx ReportContext, styled bool) []string {
+	parts := []string{"Agent: " + ctx.agent(), "Period: " + ctx.period()}
 	switch kind {
 	case "tools":
 		layer := ctx.Layer
@@ -133,9 +149,13 @@ func contextLine(kind string, ctx ReportContext) string {
 		parts = append(parts, "Group by: "+string(contextSkillGroupBy(ctx)))
 		parts = append(parts, "Strict: "+strconv.FormatBool(ctx.Strict))
 	case "stats":
-		parts = append(parts, "Skill group by: "+string(contextSkillGroupBy(ctx)))
+		parts = append(parts, "Skill grouping: "+string(contextSkillGroupBy(ctx)))
 	}
-	return strings.Join(parts, "  ·  ")
+	lines := make([]string, len(parts))
+	for i, part := range parts {
+		lines[i] = styleContext(part, styled)
+	}
+	return lines
 }
 
 func contextSkillGroupBy(ctx ReportContext) aggregate.SkillGroupBy {
@@ -152,14 +172,14 @@ func renderStats(summary aggregate.Overview, width int, styled bool) string {
 		metric("Tool Calls", summary.ToolCalls, styled),
 		metric("Skill Uses", summary.SkillUses, styled),
 	}
-	if width < 70 {
-		return strings.Join(items, "\n") + "\n" + styleEmptyIfZero(summary, styled)
-	}
 	max := 0
 	for _, item := range items {
 		if w := lipgloss.Width(item); w > max {
 			max = w
 		}
+	}
+	if width < 70 || max*len(items)+2*(len(items)-1) > width {
+		return strings.Join(items, "\n") + "\n" + styleEmptyIfZero(summary, styled)
 	}
 	for i := range items {
 		items[i] = padRight(items[i], max)
@@ -175,7 +195,11 @@ func styleEmptyIfZero(summary aggregate.Overview, styled bool) string {
 }
 
 func metric(label string, value int, styled bool) string {
-	return padRight(styleLabel(label, styled), 14) + " " + padLeft(formatCount(value), 12)
+	valueText := formatCount(value)
+	if styled {
+		valueText = lipgloss.NewStyle().Bold(true).Render(valueText)
+	}
+	return padRight(styleLabel(label, styled), 14) + " " + padLeft(valueText, 12)
 }
 
 func renderTools(rows []aggregate.ToolRow, ctx ReportContext, width int, styled bool) string {
@@ -186,31 +210,33 @@ func renderTools(rows []aggregate.ToolRow, ctx ReportContext, width int, styled 
 	standard := width < 100
 	if compact {
 		nameWidth := maxNameWidth(width-9, rows, func(row aggregate.ToolRow) string { return safeDisplay(row.Name) })
-		lines := []string{padRight(styleHeader("Tool", styled), nameWidth) + "  " + padLeft(styleHeader("Calls", styled), 7)}
+		header := padRight(styleHeader("Tool", styled), nameWidth) + "  " + padLeft(styleHeader("Calls", styled), 7)
+		lines := []string{header, tableRule(lipgloss.Width(header), styled)}
 		for _, row := range rows {
-			lines = append(lines, padRight(truncate(safeDisplay(row.Name), nameWidth), nameWidth)+"  "+padLeft(formatCount(row.Calls), 7))
+			name := styleIdentity(truncate(safeDisplay(row.Name), nameWidth), styled)
+			lines = append(lines, padRight(name, nameWidth)+"  "+padLeft(formatCount(row.Calls), 7))
 		}
 		return strings.Join(lines, "\n")
 	}
 	nameWidth := maxNameWidth(width-44, rows, func(row aggregate.ToolRow) string { return safeDisplay(row.Name) })
 	if standard {
-		lines := []string{padRight(styleHeader("Tool", styled), nameWidth) + "  " + padLeft(styleHeader("Calls", styled), 8) + "  " + padLeft(styleHeader("Failures", styled), 8) + "  " + padLeft(styleHeader("Last Used", styled), 22)}
+		header := padRight(styleHeader("Tool", styled), nameWidth) + "  " + padLeft(styleHeader("Calls", styled), 8) + "  " + padLeft(styleHeader("Failures", styled), 8) + "  " + padLeft(styleHeader("Last Used", styled), 22)
+		lines := []string{header, tableRule(lipgloss.Width(header), styled)}
 		for _, row := range rows {
 			failure := formatCount(row.Failures)
-			if styled && row.Failures > 0 {
-				failure = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(failure)
-			}
-			lines = append(lines, padRight(truncate(safeDisplay(row.Name), nameWidth), nameWidth)+"  "+padLeft(formatCount(row.Calls), 8)+"  "+padLeft(failure, 8)+"  "+padLeft(formatLocalTime(row.LastUsed, ctx.Location), 22))
+			lastUsed := styleSecondary(formatLocalTime(row.LastUsed, ctx.Location), styled)
+			name := styleIdentity(truncate(safeDisplay(row.Name), nameWidth), styled)
+			lines = append(lines, padRight(name, nameWidth)+"  "+padLeft(formatCount(row.Calls), 8)+"  "+padLeft(failure, 8)+"  "+padLeft(lastUsed, 22))
 		}
 		return strings.Join(lines, "\n")
 	}
-	lines := []string{padRight(styleHeader("Tool", styled), nameWidth) + "  " + padLeft(styleHeader("Calls", styled), 8) + "  " + padLeft(styleHeader("Failures", styled), 8) + "  " + padLeft(styleHeader("Last Used", styled), 22)}
+	header := padRight(styleHeader("Tool", styled), nameWidth) + "  " + padLeft(styleHeader("Calls", styled), 8) + "  " + padLeft(styleHeader("Failures", styled), 8) + "  " + padLeft(styleHeader("Last Used", styled), 22)
+	lines := []string{header, tableRule(lipgloss.Width(header), styled)}
 	for _, row := range rows {
 		failure := formatCount(row.Failures)
-		if styled && row.Failures > 0 {
-			failure = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(failure)
-		}
-		lines = append(lines, padRight(truncate(safeDisplay(row.Name), nameWidth), nameWidth)+"  "+padLeft(formatCount(row.Calls), 8)+"  "+padLeft(failure, 8)+"  "+padLeft(formatLocalTime(row.LastUsed, ctx.Location), 22))
+		lastUsed := styleSecondary(formatLocalTime(row.LastUsed, ctx.Location), styled)
+		name := styleIdentity(truncate(safeDisplay(row.Name), nameWidth), styled)
+		lines = append(lines, padRight(name, nameWidth)+"  "+padLeft(formatCount(row.Calls), 8)+"  "+padLeft(failure, 8)+"  "+padLeft(lastUsed, 22))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -221,9 +247,11 @@ func renderSkills(rows []aggregate.SkillRow, ctx ReportContext, width int, style
 	}
 	if width < 70 {
 		nameWidth := maxSkillNameWidth(width-9, rows)
-		lines := []string{padRight(styleHeader("Skill", styled), nameWidth) + "  " + padLeft(styleHeader("Total", styled), 7)}
+		header := padRight(styleHeader("Skill", styled), nameWidth) + "  " + padLeft(styleHeader("Total", styled), 7)
+		lines := []string{header, tableRule(lipgloss.Width(header), styled)}
 		for _, row := range rows {
-			lines = append(lines, padRight(truncate(safeDisplay(row.Name), nameWidth), nameWidth)+"  "+padLeft(formatCount(row.Total), 7))
+			name := styleIdentity(truncate(safeDisplay(row.Name), nameWidth), styled)
+			lines = append(lines, padRight(name, nameWidth)+"  "+padLeft(formatCount(row.Total), 7))
 		}
 		return strings.Join(lines, "\n")
 	}
@@ -232,16 +260,21 @@ func renderSkills(rows []aggregate.SkillRow, ctx ReportContext, width int, style
 	// column can accommodate every row without truncation.
 	if width < 100 || width-97 < maxSkillNameContentWidth(rows) {
 		nameWidth := maxSkillNameWidth(width-39, rows)
-		lines := []string{padRight(styleHeader("Skill", styled), nameWidth) + "  " + padLeft(styleHeader("Explicit", styled), 8) + "  " + padLeft(styleHeader("Implicit", styled), 8) + "  " + padLeft(styleHeader("Unknown", styled), 8) + "  " + padLeft(styleHeader("Total", styled), 7)}
+		header := padRight(styleHeader("Skill", styled), nameWidth) + "  " + padLeft(styleHeader("Explicit", styled), 8) + "  " + padLeft(styleHeader("Implicit", styled), 8) + "  " + padLeft(styleHeader("Unknown", styled), 8) + "  " + padLeft(styleHeader("Total", styled), 7)
+		lines := []string{header, tableRule(lipgloss.Width(header), styled)}
 		for _, row := range rows {
-			lines = append(lines, padRight(truncate(safeDisplay(row.Name), nameWidth), nameWidth)+"  "+padLeft(formatCount(row.Explicit), 8)+"  "+padLeft(formatCount(row.Implicit), 8)+"  "+padLeft(formatCount(row.Unknown), 8)+"  "+padLeft(formatCount(row.Total), 7))
+			name := styleIdentity(truncate(safeDisplay(row.Name), nameWidth), styled)
+			lines = append(lines, padRight(name, nameWidth)+"  "+padLeft(formatCount(row.Explicit), 8)+"  "+padLeft(formatCount(row.Implicit), 8)+"  "+padLeft(formatCount(row.Unknown), 8)+"  "+padLeft(formatCount(row.Total), 7))
 		}
 		return strings.Join(lines, "\n")
 	}
 	nameWidth := maxSkillNameWidth(width-97, rows)
-	lines := []string{padRight(styleHeader("Skill", styled), nameWidth) + "  " + padLeft(styleHeader("Explicit", styled), 8) + "  " + padLeft(styleHeader("Implicit", styled), 8) + "  " + padLeft(styleHeader("Unknown", styled), 8) + "  " + padLeft(styleHeader("Confirmed", styled), 9) + "  " + padLeft(styleHeader("Inferred", styled), 8) + "  " + padLeft(styleHeader("Unconfirmed", styled), 11) + "  " + padLeft(styleHeader("Total", styled), 7) + "  " + padLeft(styleHeader("Last Used", styled), 22)}
+	header := padRight(styleHeader("Skill", styled), nameWidth) + "  " + padLeft(styleHeader("Explicit", styled), 8) + "  " + padLeft(styleHeader("Implicit", styled), 8) + "  " + padLeft(styleHeader("Unknown", styled), 8) + "  " + padLeft(styleHeader("Confirmed", styled), 9) + "  " + padLeft(styleHeader("Inferred", styled), 8) + "  " + padLeft(styleHeader("Unconfirmed", styled), 11) + "  " + padLeft(styleHeader("Total", styled), 7) + "  " + padLeft(styleHeader("Last Used", styled), 22)
+	lines := []string{header, tableRule(lipgloss.Width(header), styled)}
 	for _, row := range rows {
-		lines = append(lines, padRight(truncate(safeDisplay(row.Name), nameWidth), nameWidth)+"  "+padLeft(formatCount(row.Explicit), 8)+"  "+padLeft(formatCount(row.Implicit), 8)+"  "+padLeft(formatCount(row.Unknown), 8)+"  "+padLeft(formatCount(row.Confirmed), 9)+"  "+padLeft(formatCount(row.Inferred), 8)+"  "+padLeft(formatCount(row.Unconfirmed), 11)+"  "+padLeft(formatCount(row.Total), 7)+"  "+padLeft(formatLocalTime(row.LastUsed, ctx.Location), 22))
+		lastUsed := styleSecondary(formatLocalTime(row.LastUsed, ctx.Location), styled)
+		name := styleIdentity(truncate(safeDisplay(row.Name), nameWidth), styled)
+		lines = append(lines, padRight(name, nameWidth)+"  "+padLeft(formatCount(row.Explicit), 8)+"  "+padLeft(formatCount(row.Implicit), 8)+"  "+padLeft(formatCount(row.Unknown), 8)+"  "+padLeft(formatCount(row.Confirmed), 9)+"  "+padLeft(formatCount(row.Inferred), 8)+"  "+padLeft(formatCount(row.Unconfirmed), 11)+"  "+padLeft(formatCount(row.Total), 7)+"  "+padLeft(lastUsed, 22))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -364,32 +397,52 @@ func formatMachineTime(value time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
 }
 
-func styleTitle(value string, enabled bool) string {
-	if !enabled {
-		return value
-	}
-	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render(value)
-}
-
 func styleContext(value string, enabled bool) string {
-	if !enabled {
-		return value
-	}
-	return lipgloss.NewStyle().Faint(true).Render(value)
+	return styleSecondary(value, enabled)
 }
 
 func styleHeading(value string, enabled bool) string {
 	if !enabled {
 		return value
 	}
-	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")).Render(value)
+	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render(value)
+}
+
+// DiagnosticPrefix styles a warning or error label according to terminal capabilities.
+func DiagnosticPrefix(level string, capabilities TerminalCapabilities) string {
+	level = strings.TrimSuffix(strings.TrimSpace(level), ":")
+	label := level + ":"
+	if !capabilities.ColorsEnabled() {
+		return label
+	}
+	color := ""
+	switch strings.ToLower(level) {
+	case "warning":
+		color = "11"
+	case "error":
+		color = "9"
+	default:
+		return label
+	}
+	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(color)).Render(label)
 }
 
 func styleHeader(value string, enabled bool) string {
 	if !enabled {
 		return value
 	}
-	return lipgloss.NewStyle().Bold(true).Render(value)
+	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11")).Render(value)
+}
+
+func styleIdentity(value string, enabled bool) string {
+	if !enabled {
+		return value
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Render(value)
+}
+
+func tableRule(width int, enabled bool) string {
+	return styleSecondary(strings.Repeat("─", width), enabled)
 }
 
 func styleLabel(value string, enabled bool) string {
@@ -400,10 +453,7 @@ func styleLabel(value string, enabled bool) string {
 }
 
 func styleFooter(value string, enabled bool) string {
-	if !enabled {
-		return value
-	}
-	return lipgloss.NewStyle().Faint(true).Render(value)
+	return styleSecondary(value, enabled)
 }
 
 func styleNotice(value string, enabled bool) string {
@@ -411,6 +461,29 @@ func styleNotice(value string, enabled bool) string {
 		return value
 	}
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render(value)
+}
+
+func styleSecondary(value string, enabled bool) string {
+	if !enabled {
+		return value
+	}
+	return lipgloss.NewStyle().Faint(true).Render(value)
+}
+
+func formatQuantity(value int, singular, plural string) string {
+	unit := plural
+	if value == 1 {
+		unit = singular
+	}
+	return formatCount(value) + " " + unit
+}
+
+func toolFooter(rows []aggregate.ToolRow) string {
+	return formatQuantity(len(rows), "tool", "tools") + ", " + formatQuantity(totalToolCalls(rows), "call", "calls") + " total"
+}
+
+func skillFooter(rows []aggregate.SkillRow) string {
+	return formatQuantity(len(rows), "skill", "skills") + ", " + formatQuantity(totalSkillUses(rows), "use", "uses") + " total"
 }
 
 func totalToolCalls(rows []aggregate.ToolRow) int {

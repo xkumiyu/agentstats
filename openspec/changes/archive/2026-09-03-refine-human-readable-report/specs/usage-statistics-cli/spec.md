@@ -1,12 +1,7 @@
-# usage-statistics-cli Specification
-
-## Purpose
-
-Codexのsession・user prompt・Tool・Skill利用を、system logではなく集計条件と要点が伝わるstatic reportとして端末へ表示し、同じ内容をscriptや分析toolから再利用できる軽量CLIとして提供する。
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: overview統計を表示する
+
 `agentstats stats` は内容を示す `USAGE OVERVIEW` headingに続けて、対象Agentと期間をラベル付きのcontext行として表示し、Sessions、User Prompts、Tool Calls、およびSkill Usesを視覚的に区切られたsummaryとして表示しなければならない（SHALL）。グローバルな実行ファイル名または製品名だけのtitle（例: `AGENTSTATS`、`agentstats stats`）をreportのheadingとして表示してはならない（MUST NOT）。Tool Callsはeffective Tool view、Skill Usesはturn単位で重複排除した全確認状態の利用を使用しなければならない（SHALL）。
 
 #### Scenario: 履歴が存在する
@@ -20,6 +15,7 @@ Codexのsession・user prompt・Tool・Skill利用を、system logではなく�
 - **THEN** システムは `USAGE OVERVIEW` headingと対象Agent・選択期間のcontextを表示し、各集計値を0として出力するとともに、選択期間に利用がないことを説明するempty-state messageを表示して0で終了する
 
 ### Requirement: Tool統計を表示する
+
 `agentstats tools` は `TOOL USAGE` headingに続けて、対象Agent、選択中の期間、およびlayerをそれぞれラベル付きのcontext行として表示し、canonical Tool名ごとのCalls、Failures、およびLast Usedを見出し付きtableとして表示しなければならない（SHALL）。footerは対象Tool数と総Callsをdomain用語で表示し、`Rows`という実装用語や中点区切りを使用してはならない（MUST NOT）。既定ではeffective layerを集計し、`--layer effective|runtime|model` により集計layerを選択できなければならない（SHALL）。
 
 #### Scenario: 既定のTool統計を表示する
@@ -43,6 +39,7 @@ Codexのsession・user prompt・Tool・Skill利用を、system logではなく�
 - **THEN** システムは引数errorをstderrへ出力し、非0の終了codeを返す
 
 ### Requirement: Skill統計を表示する
+
 `agentstats skills` は `SKILL USAGE` headingに続けて、対象Agent、選択中の期間、grouping、およびstrict状態をそれぞれラベル付きのcontext行として表示し、Skill名ごとのExplicit、Implicit、Confirmed、Inferred、Unconfirmed、Total、およびLast Usedを集計しなければならない（SHALL）。human-readable reportは利用可能な幅に応じて内訳columnを調整できるが、Skill名とTotalを常に表示しなければならない（SHALL）。footerは対象Skill数と総Usesをdomain用語で表示し、`Rows`という実装用語や中点区切りを使用してはならない（MUST NOT）。JSONはすべての集計fieldを保持しなければならない（SHALL）。`--strict` が指定された場合はstateが `confirmed` の利用だけをTotalと各mode集計の対象にしなければならない（SHALL）。
 
 #### Scenario: 全Skill観測を表示する
@@ -65,18 +62,8 @@ Codexのsession・user prompt・Tool・Skill利用を、system logではなく�
 - **WHEN** 1回の重複排除済みSkill利用が複数の検出方式を持つ
 - **THEN** システムはその利用をTotalへ1回だけ加算する
 
-### Requirement: 期間とCodex homeを各統計commandで指定できる
-`stats`、`tools`、`skills` は共通して `--days`、`--codex-home`、`--color auto|always|never` を受け付けなければならない（SHALL）。filterとsource解決はすべての出力形式で同じ結果集合へ適用しなければならない（SHALL）。
-
-#### Scenario: 30日分のSkill統計を取得する
-- **WHEN** userが `agentstats skills --days 30` を実行する
-- **THEN** システムはcutoff以後の観測だけからSkill統計を生成する
-
-#### Scenario: 別のCodex homeを集計する
-- **WHEN** userが `agentstats stats --codex-home /tmp/codex-home` を実行する
-- **THEN** システムは指定先だけをsourceとしてoverviewを生成する
-
 ### Requirement: human-readable report・JSONを提供する
+
 各統計commandは既定で、commandの実行ファイル名ではなくreport内容を示すheading、対象Agent・適用中のfilterをラベル付きcontext行、明確なsectionまたはcolumn heading、整列した値、および必要なfooterを持つhuman-readable static reportを出力しなければならない（SHALL）。context行は項目ごとに改行して表示し、`·`（中点）で項目を連結してはならない（MUST NOT）。countは桁区切りして右揃えにし、tableのLast Usedはtimezoneを含む簡潔なlocal日時で表示しなければならない（SHALL）。`--json` でmachine-readable出力へ切り替えられなければならず（SHALL）、JSONはhuman-readable reportと同じfilter・集計結果を表してfield順をcommandごとに安定させ、timestampをRFC 3339で出力しなければならない（SHALL）。この変更ではJSONのfield名・構造・値の意味を変更してはならない（MUST NOT）。
 
 #### Scenario: 既定reportを表示する
@@ -95,6 +82,7 @@ Codexのsession・user prompt・Tool・Skill利用を、system logではなく�
 - **THEN** stdout全体は単独の有効なJSON documentとなり、warningや進捗messageを含まず、human-readable heading・context・footerの文言を含まない
 
 ### Requirement: terminal capabilityに応じて安全に装飾する
+
 既定の `--color auto` では、システムはstdoutがTTYであり `NO_COLOR` が設定されていない場合だけhuman-readable reportへANSI styleを適用しなければならない（SHALL）。`--color always` は明示的にstyleを有効化し、`--color never` は無効化しなければならず、この2つの強制modeは `NO_COLOR` より優先しなければならない（SHALL）。JSONにはoptionやterminal状態にかかわらずANSI escape sequenceを含めてはならない（MUST NOT）。色は補助表現に限り、label、text、数値、または配置なしに意味を伝えてはならない（MUST NOT）。colorが有効なhuman-readable reportでは、report headingを共通のaccent styleで目立たせ、table headerをheadingと区別できるstyleで表示しなければならない（SHALL）。通常のlabel・table row・count・Failures・Skillのevidence status値は既定色を基本とし、table cellをerror colorやwarning colorで強調してはならない（MUST NOT）。通常状態を示すためだけの一律なsuccess colorを全rowへ適用してはならない（MUST NOT）。
 
 #### Scenario: TTYへ既定reportを出力する
@@ -123,6 +111,7 @@ Codexのsession・user prompt・Tool・Skill利用を、system logではなく�
 - **THEN** システムはANSIを含まない有効なJSONを出力する
 
 ### Requirement: terminal幅に応じてreportをcompact化する
+
 human-readable reportは取得可能なterminal幅へ収まるようにlayoutを選択しなければならない（SHALL）。狭い幅では補助的な内訳columnを省略またはcompact化できるが、report内容を示すheading、対象Agent・期間を示すcontext、row identity、および主要countを保持しなければならない（SHALL）。長いnameはcolumn境界内で省略記号付きに短縮し、異なるrowの値に見える折返しをしてはならない（MUST NOT）。
 
 #### Scenario: 十分に広いterminalで表示する
@@ -134,32 +123,3 @@ human-readable reportは取得可能なterminal幅へ収まるようにlayoutを
 
 - **WHEN** terminal幅がwide layoutに不足する
 - **THEN** システムはreport heading、Agent・Periodのcontext、主要nameとcountを残したcompact layoutを表示し、table rowを誤解を招く形で折り返さない
-
-### Requirement: 空結果を行動可能なmessageで示す
-`tools` または `skills` の対象rowが0件の場合、human-readable reportは空tableだけを表示せず、対象期間に該当利用がないことと適用中のfilterを説明しなければならない（SHALL）。JSONは空arrayを出力しなければならない（SHALL）。
-
-#### Scenario: 期間内にSkill利用がない
-- **WHEN** userが `agentstats skills --days 1` を実行し、対象Skill利用が0件である
-- **THEN** human-readable reportは選択期間にSkill利用が見つからないことを説明して0で終了する
-
-### Requirement: CLI errorとwarningを分離する
-無効なcommand・option・値、または必須sourceを解決できない場合、システムは簡潔なerrorをstderrへ出力して非0で終了しなければならない（SHALL）。一部の履歴だけをskipして有効な結果を生成できる場合は、結果をstdout、warning要約をstderrへ出力して0で終了しなければならない（SHALL）。
-
-#### Scenario: 未知のcommandを指定する
-- **WHEN** userが `agentstats unknown` を実行する
-- **THEN** システムは利用可能なcommandを示すerrorをstderrへ出力し、非0で終了する
-
-#### Scenario: machine-readable出力中にwarningが発生する
-- **WHEN** `--json` の集計中に一部recordがskipされる
-- **THEN** stdoutは有効なJSON documentのままであり、warning要約はstderrだけに出力される
-
-### Requirement: 同一入力から決定的な結果を生成する
-システムは同じ履歴、同じfilter、および同じ基準時刻に対して、file探索順に依存しない同一の件数とrow順序を生成しなければならない（SHALL）。同じterminal capability、幅、およびcolor modeを与えたhuman-readable reportはbyte単位で決定的でなければならない（SHALL）。
-
-#### Scenario: file列挙順が変わる
-- **WHEN** 同一内容の履歴fileが異なる順序で列挙される
-- **THEN** table・JSONのrow順序と集計値は変化しない
-
-#### Scenario: terminal capabilityを固定する
-- **WHEN** 同じ集計resultを同じ幅、color profile、TTY状態、基準時刻で複数回描画する
-- **THEN** human-readable reportの出力byte列は一致する

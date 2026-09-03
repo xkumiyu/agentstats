@@ -107,6 +107,8 @@ func hasOption(args []string, option string) bool {
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	_, noColor := os.LookupEnv("NO_COLOR")
+	diagnostics := newDiagnosticWriter(stderr, output.ColorAuto, noColor)
 	if len(args) == 0 {
 		_, _ = io.WriteString(stderr, usageText)
 		return 2
@@ -128,7 +130,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if kind != "stats" && kind != "tools" && kind != "skills" {
-		_, _ = fmt.Fprintf(stderr, "error: unknown command %q\n\n%s", args[0], usageText)
+		diagnostics.errorf("unknown command %q", args[0])
+		_, _ = io.WriteString(stderr, "\n"+usageText)
 		return 2
 	}
 	if hasOption(args[1:], "--help") || hasOption(args[1:], "-h") {
@@ -136,7 +139,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if hasOption(args[1:], "--version") {
-		_, _ = fmt.Fprintln(stderr, "error: --version is a top-level option; use agentstats --version")
+		diagnostics.errorf("--version is a top-level option; use agentstats --version")
 		return 2
 	}
 
@@ -159,38 +162,42 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if extra := flags.Args(); len(extra) > 0 {
-		_, _ = fmt.Fprintf(stderr, "error: unexpected argument %q\n", extra[0])
+		diagnostics.errorf("unexpected argument %q", extra[0])
 		return 2
 	}
 	mode := output.ColorMode(*color)
+	diagnostics = newDiagnosticWriter(stderr, mode, noColor)
+	if *jsonOutput {
+		diagnostics = newDiagnosticWriter(stderr, output.ColorNever, noColor)
+	}
 	if !mode.Valid() {
-		_, _ = fmt.Fprintf(stderr, "error: invalid --color %q (want auto, always, or never)\n", *color)
+		diagnostics.errorf("invalid --color %q (want auto, always, or never)", *color)
 		return 2
 	}
 	selectedLayer := usage.ToolLayer(*layer)
 	if selectedLayer != usage.LayerEffective && selectedLayer != usage.LayerRuntime && selectedLayer != usage.LayerModel {
-		_, _ = fmt.Fprintf(stderr, "error: invalid --layer %q (want effective, runtime, or model)\n", *layer)
+		diagnostics.errorf("invalid --layer %q (want effective, runtime, or model)", *layer)
 		return 2
 	}
 	if kind != "tools" && *layer != string(usage.LayerEffective) {
-		_, _ = fmt.Fprintln(stderr, "error: --layer is only valid for tools")
+		diagnostics.errorf("--layer is only valid for tools")
 		return 2
 	}
 	selectedGroupBy := aggregate.SkillGroupBy(*groupBy)
 	if !selectedGroupBy.Valid() {
-		_, _ = fmt.Fprintf(stderr, "error: invalid --group-by %q (want turn or session)\n", *groupBy)
+		diagnostics.errorf("invalid --group-by %q (want turn or session)", *groupBy)
 		return 2
 	}
 	if kind == "tools" && selectedGroupBy != aggregate.SkillGroupByTurn {
-		_, _ = fmt.Fprintln(stderr, "error: --group-by is only valid for stats or skills")
+		diagnostics.errorf("--group-by is only valid for stats or skills")
 		return 2
 	}
 	if kind != "skills" && *strict {
-		_, _ = fmt.Fprintln(stderr, "error: --strict is only valid for skills")
+		diagnostics.errorf("--strict is only valid for skills")
 		return 2
 	}
 	if *days < 0 {
-		_, _ = fmt.Fprintln(stderr, "error: --days must be at least 1")
+		diagnostics.errorf("--days must be at least 1")
 		return 2
 	}
 	daysSet := false
@@ -200,19 +207,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	})
 	if daysSet && *days == 0 {
-		_, _ = fmt.Fprintln(stderr, "error: --days must be at least 1")
+		diagnostics.errorf("--days must be at least 1")
 		return 2
 	}
 
 	home, err := codex.ResolveHome(*codexHome)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "error: resolve Codex home: %v\n", err)
+		diagnostics.errorf("resolve Codex home: %v", err)
 		return 1
 	}
 	now := time.Now().UTC()
 	input, err := codex.Load(home, codex.IngestOptions{Days: *days, DaysSet: daysSet, Now: now})
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "error: read Codex history %q: %v\n", home, err)
+		diagnostics.errorf("read Codex history %q: %v", home, err)
 		return 1
 	}
 	aggregateInput := aggregate.Input{Turns: input.Turns, SessionCount: len(input.Sessions), Warnings: input.Warnings}
@@ -230,36 +237,63 @@ func run(args []string, stdout, stderr io.Writer) int {
 	context := output.ReportContext{Agent: "codex", Period: period, Layer: selectedLayer, SkillGroupBy: selectedGroupBy, Strict: *strict, ReferenceTime: now, Location: time.Local}
 	if *jsonOutput {
 		if err := output.WriteJSON(stdout, kind, context, report); err != nil {
-			_, _ = fmt.Fprintf(stderr, "error: render json: %v\n", err)
+			diagnostics.errorf("render json: %v", err)
 			return 1
 		}
 	} else {
-		_, noColor := os.LookupEnv("NO_COLOR")
 		capabilities := output.TerminalCapabilities{ColorMode: mode, NoColor: noColor}
 		if file, ok := stdout.(*os.File); ok {
 			capabilities = output.DetectCapabilities(file, mode, capabilities.NoColor)
 		}
 		text := output.RenderHuman(kind, context, report, capabilities)
 		if _, err := io.WriteString(stdout, text); err != nil {
-			_, _ = fmt.Fprintf(stderr, "error: write report: %v\n", err)
+			diagnostics.errorf("write report: %v", err)
 			return 1
 		}
 	}
-	writeWarnings(stderr, input.Warnings, *verbose)
+	writeWarnings(stderr, input.Warnings, *verbose, diagnostics.capabilities)
 	if *strictInput && len(input.Warnings) > 0 {
-		_, _ = fmt.Fprintln(stderr, "error: input warnings encountered (--strict-input)")
+		diagnostics.errorf("input warnings encountered (--strict-input)")
 		return 1
 	}
 	return 0
 }
 
-func writeWarnings(w io.Writer, warnings []usage.Warning, verbose ...bool) {
+type diagnosticWriter struct {
+	w            io.Writer
+	capabilities output.TerminalCapabilities
+}
+
+func newDiagnosticWriter(w io.Writer, mode output.ColorMode, noColor bool) diagnosticWriter {
+	capabilities := output.TerminalCapabilities{ColorMode: mode, NoColor: noColor}
+	if file, ok := w.(*os.File); ok {
+		capabilities = output.DetectCapabilities(file, mode, noColor)
+	}
+	return diagnosticWriter{w: w, capabilities: capabilities}
+}
+
+func (d diagnosticWriter) errorf(format string, args ...any) {
+	d.write("error", fmt.Sprintf(format, args...))
+}
+
+func (d diagnosticWriter) warningf(format string, args ...any) {
+	d.write("warning", fmt.Sprintf(format, args...))
+}
+
+func (d diagnosticWriter) write(level, message string) {
+	_, _ = fmt.Fprintf(d.w, "%s %s\n", output.DiagnosticPrefix(level, d.capabilities), message)
+}
+
+func writeWarnings(w io.Writer, warnings []usage.Warning, verbose bool, capabilities ...output.TerminalCapabilities) {
 	if len(warnings) == 0 {
 		return
 	}
-	showDetails := len(verbose) > 0 && verbose[0]
-	if !showDetails {
-		writeWarningSummary(w, warnings)
+	diagnostics := diagnosticWriter{w: w, capabilities: output.TerminalCapabilities{ColorMode: output.ColorNever}}
+	if len(capabilities) > 0 {
+		diagnostics.capabilities = capabilities[0]
+	}
+	if !verbose {
+		writeWarningSummary(diagnostics, warnings)
 		return
 	}
 	for _, warning := range warnings {
@@ -276,9 +310,9 @@ func writeWarnings(w io.Writer, warnings []usage.Warning, verbose ...bool) {
 			count = 1
 		}
 		if location == "" {
-			_, _ = fmt.Fprintf(w, "warning: %s%s (%s)\n", cleanWarningValue(warning.Reason), typeSuffix, formatWarningCount(count))
+			diagnostics.warningf("%s%s (%s)", cleanWarningValue(warning.Reason), typeSuffix, formatWarningCount(count))
 		} else {
-			_, _ = fmt.Fprintf(w, "warning: %s%s at %s (%s)\n", cleanWarningValue(warning.Reason), typeSuffix, location, formatWarningCount(count))
+			diagnostics.warningf("%s%s at %s (%s)", cleanWarningValue(warning.Reason), typeSuffix, location, formatWarningCount(count))
 		}
 	}
 }
@@ -292,7 +326,7 @@ type warningSummary struct {
 	types     map[string]map[string]int
 }
 
-func writeWarningSummary(w io.Writer, warnings []usage.Warning) {
+func writeWarningSummary(diagnostics diagnosticWriter, warnings []usage.Warning) {
 	summary := summarizeWarnings(warnings)
 	reasons := make([]string, 0, len(summary.reasons))
 	for reason := range summary.reasons {
@@ -323,11 +357,11 @@ func writeWarningSummary(w io.Writer, warnings []usage.Warning) {
 	detailText := strings.Join(details, ", ")
 	switch {
 	case summary.records > 0 && summary.readFiles > 0:
-		_, _ = fmt.Fprintf(w, "warning: skipped %s %s across %s %s; could not read %s %s (%s); use --verbose to show details\n", formatWarningCount(summary.records), warningRecordLabel(summary.records), formatWarningCount(fileCount), fileLabel, formatWarningCount(summary.readFiles), warningFileLabel(summary.readFiles), detailText)
+		diagnostics.warningf("skipped %s %s across %s %s; could not read %s %s (%s); use --verbose to show details", formatWarningCount(summary.records), warningRecordLabel(summary.records), formatWarningCount(fileCount), fileLabel, formatWarningCount(summary.readFiles), warningFileLabel(summary.readFiles), detailText)
 	case summary.readFiles > 0:
-		_, _ = fmt.Fprintf(w, "warning: could not read %s %s (%s); use --verbose to show details\n", formatWarningCount(summary.readFiles), warningFileLabel(summary.readFiles), detailText)
+		diagnostics.warningf("could not read %s %s (%s); use --verbose to show details", formatWarningCount(summary.readFiles), warningFileLabel(summary.readFiles), detailText)
 	default:
-		_, _ = fmt.Fprintf(w, "warning: skipped %s %s across %s %s (%s); use --verbose to show details\n", formatWarningCount(summary.total), warningRecordLabel(summary.total), formatWarningCount(fileCount), fileLabel, detailText)
+		diagnostics.warningf("skipped %s %s across %s %s (%s); use --verbose to show details", formatWarningCount(summary.total), warningRecordLabel(summary.total), formatWarningCount(fileCount), fileLabel, detailText)
 	}
 }
 
