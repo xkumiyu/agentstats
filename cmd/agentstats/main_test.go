@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xkumiyu/agentstats/internal/usage"
 	appversion "github.com/xkumiyu/agentstats/internal/version"
@@ -30,6 +31,41 @@ func testHome(t *testing.T) string {
 		`{"timestamp":"2026-01-01T00:00:06Z","type":"task_started","payload":{"turn_id":"t2"}}`,
 		`{"timestamp":"2026-01-01T00:00:07Z","type":"user_message","payload":{"text":"$report"}}`,
 		`{"timestamp":"2026-01-01T00:00:08Z","type":"task_complete","payload":{"turn_id":"t2"}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
+func writeTestSkill(t *testing.T, directory, frontmatterName string) {
+	t.Helper()
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := "---\n"
+	if frontmatterName != "" {
+		contents += "name: " + frontmatterName + "\n"
+	}
+	contents += "---\n\n# test skill\n"
+	if err := os.WriteFile(filepath.Join(directory, "SKILL.md"), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func usageHomeAt(t *testing.T, when time.Time) string {
+	t.Helper()
+	home := t.TempDir()
+	path := filepath.Join(home, "sessions", when.UTC().Format("2006"), "one.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stamp := func(offset time.Duration) string { return when.Add(offset).UTC().Format(time.RFC3339) }
+	lines := []string{
+		`{"timestamp":"` + stamp(0) + `","type":"session_meta","payload":{"id":"s","cli_version":"1"}}`,
+		`{"timestamp":"` + stamp(time.Second) + `","type":"task_started","payload":{"turn_id":"t"}}`,
+		`{"timestamp":"` + stamp(2*time.Second) + `","type":"user_message","payload":{"text":"$report"}}`,
+		`{"timestamp":"` + stamp(3*time.Second) + `","type":"task_complete","payload":{"turn_id":"t"}}`,
 	}
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -181,7 +217,7 @@ func TestRunHelpIsScopedToCommand(t *testing.T) {
 	}{
 		{command: "stats", want: []string{"Usage: agentstats stats [options]", "--days", "--group-by"}, omit: []string{"--layer", "--strict"}},
 		{command: "tools", want: []string{"Usage: agentstats tools [options]", "--days", "--layer"}, omit: []string{"--group-by", "--strict"}},
-		{command: "skills", want: []string{"Usage: agentstats skills [options]", "--days", "--group-by", "--strict"}, omit: []string{"--layer"}},
+		{command: "skills", want: []string{"Usage: agentstats skills [options]", "--days", "--group-by", "--strict", "--unused", "--root"}, omit: []string{"--layer"}},
 	} {
 		stdout.Reset()
 		stderr.Reset()
@@ -289,6 +325,195 @@ func TestRunSkillsSupportsSessionGrouping(t *testing.T) {
 	}
 }
 
+func TestRunUnusedSkillsEndToEnd(t *testing.T) {
+	home := testHome(t)
+	root := t.TempDir()
+	writeTestSkill(t, filepath.Join(root, "repo", ".agents", "skills", "report"), "report")
+	writeTestSkill(t, filepath.Join(root, "repo", ".codex", "skills", "review"), "canonical-review")
+	writeTestSkill(t, filepath.Join(root, "repo", ".codex", "plugins", "cache", "example", "data-analytics", "1.0.0", "skills", "router"), "")
+	writeTestSkill(t, filepath.Join(root, "repo", "skills", "ignored"), "ignored")
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"skills", "--codex-home", home, "--root", root, "--unused", "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("unused JSON exit=%d stderr=%s", code, stderr.String())
+	}
+	var value struct {
+		View           string   `json:"view"`
+		Roots          []string `json:"roots"`
+		InstalledCount int      `json:"installed_count"`
+		UnusedCount    int      `json:"unused_count"`
+		Rows           []struct {
+			Name         string `json:"name"`
+			NameSource   string `json:"name_source"`
+			NameMismatch bool   `json:"name_mismatch"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &value); err != nil {
+		t.Fatalf("invalid unused JSON: %v (%s)", err, stdout.String())
+	}
+	if value.View != "unused" || len(value.Roots) != 1 || value.Roots[0] != root {
+		t.Fatalf("unused scope = %#v", value)
+	}
+	if value.InstalledCount != 3 || value.UnusedCount != 2 || len(value.Rows) != 2 {
+		t.Fatalf("unused counts = %#v", value)
+	}
+	if value.Rows[0].Name != "canonical-review" || value.Rows[0].NameSource != "frontmatter" || !value.Rows[0].NameMismatch {
+		t.Fatalf("frontmatter row = %#v", value.Rows[0])
+	}
+	if value.Rows[1].Name != "data-analytics:router" || value.Rows[1].NameSource != "directory" {
+		t.Fatalf("plugin row = %#v", value.Rows[1])
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected warning: %s", stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"skills", "--codex-home", home, "--root", root, "--unused", "--color", "never"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("unused human exit=%d stderr=%s", code, stderr.String())
+	}
+	for _, want := range []string{"UNUSED SKILLS", "canonical-review", "data-analytics:router", "Strict: false", "2 unused skills, 3 installed skills total"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("unused human missing %q: %s", want, stdout.String())
+		}
+	}
+}
+
+func TestRunUnusedSkillsUsesDefaultRoot(t *testing.T) {
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	writeTestSkill(t, filepath.Join(userHome, ".agents", "skills", "default-skill"), "default-skill")
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"skills", "--codex-home", testHome(t), "--unused", "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("default root exit=%d stderr=%s", code, stderr.String())
+	}
+	var value struct {
+		Roots          []string `json:"roots"`
+		InstalledCount int      `json:"installed_count"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	wantRoot := filepath.Join(userHome, ".agents", "skills")
+	if len(value.Roots) != 1 || value.Roots[0] != wantRoot || value.InstalledCount != 1 {
+		t.Fatalf("default root = %#v, want %q with one entry", value, wantRoot)
+	}
+}
+
+func TestRunUnusedSkillsSupportsRepeatableRoots(t *testing.T) {
+	home := testHome(t)
+	first := t.TempDir()
+	second := t.TempDir()
+	writeTestSkill(t, filepath.Join(first, ".agents", "skills", "first"), "first")
+	writeTestSkill(t, filepath.Join(second, ".codex", "skills", "second"), "second")
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"skills", "--codex-home", home, "--unused", "--root", second, "--root", first, "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("multiple roots exit=%d stderr=%s", code, stderr.String())
+	}
+	var value struct {
+		Roots          []string `json:"roots"`
+		InstalledCount int      `json:"installed_count"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	if len(value.Roots) != 2 || value.Roots[0] != first || value.Roots[1] != second || value.InstalledCount != 2 {
+		t.Fatalf("multiple roots = %#v", value)
+	}
+}
+
+func TestRunUnusedSkillsKeepsWarningsSeparate(t *testing.T) {
+	home := testHome(t)
+	history := filepath.Join(home, "sessions", "2026", "one.jsonl")
+	file, err := os.OpenFile(history, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("not-json\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	writeTestSkill(t, filepath.Join(root, ".agents", "skills", "report"), "report")
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"skills", "--codex-home", home, "--root", root, "--unused", "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("warning JSON exit=%d stderr=%s", code, stderr.String())
+	}
+	var value map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &value); err != nil {
+		t.Fatalf("stdout is not JSON: %v (%s)", err, stdout.String())
+	}
+	if strings.Contains(stdout.String(), "malformed_json") || strings.Contains(stdout.String(), "warning:") || strings.Contains(stdout.String(), "\x1b[") {
+		t.Fatalf("warning or ANSI leaked into JSON: %s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "malformed_json") {
+		t.Fatalf("warning missing from stderr: %s", stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"skills", "--codex-home", home, "--root", root, "--unused", "--json", "--strict-input"}, &stdout, &stderr); code != 1 {
+		t.Fatalf("strict-input exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &value); err != nil {
+		t.Fatalf("strict stdout is not JSON: %v (%s)", err, stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "strict-input") {
+		t.Fatalf("strict-input diagnostic missing: %s", stderr.String())
+	}
+}
+
+func TestRunUnusedSkillsAppliesStrictAndDays(t *testing.T) {
+	root := t.TempDir()
+	writeTestSkill(t, filepath.Join(root, ".agents", "skills", "report"), "report")
+
+	recentHome := usageHomeAt(t, time.Now().UTC().Add(-24*time.Hour))
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"skills", "--codex-home", recentHome, "--root", root, "--unused", "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("recent default exit=%d stderr=%s", code, stderr.String())
+	}
+	var value struct {
+		Strict      bool `json:"strict"`
+		UnusedCount int  `json:"unused_count"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	if value.Strict || value.UnusedCount != 0 {
+		t.Fatalf("recent default = %#v", value)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"skills", "--codex-home", recentHome, "--root", root, "--unused", "--strict", "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("strict exit=%d stderr=%s", code, stderr.String())
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	if !value.Strict || value.UnusedCount != 1 {
+		t.Fatalf("strict = %#v", value)
+	}
+
+	oldHome := usageHomeAt(t, time.Now().UTC().Add(-40*24*time.Hour))
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"skills", "--codex-home", oldHome, "--root", root, "--unused", "--days", "30", "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("days exit=%d stderr=%s", code, stderr.String())
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	if value.UnusedCount != 1 {
+		t.Fatalf("days = %#v", value)
+	}
+}
+
 func TestRunRejectsInvalidArguments(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"unknown"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "unknown command") {
@@ -318,6 +543,27 @@ func TestRunRejectsInvalidArguments(t *testing.T) {
 	stderr.Reset()
 	if code := run([]string{"tools", "--group-by", "session"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "only valid for stats or skills") {
 		t.Fatalf("tools group-by exit=%d stderr=%s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"skills", "--root", t.TempDir()}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "--root") {
+		t.Fatalf("root without unused exit=%d stderr=%s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"stats", "--unused"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "--unused") {
+		t.Fatalf("stats unused exit=%d stderr=%s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"tools", "--unused"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "--unused") {
+		t.Fatalf("tools unused exit=%d stderr=%s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	missingRoot := filepath.Join(t.TempDir(), "missing")
+	if code := run([]string{"skills", "--unused", "--root", missingRoot, "--codex-home", testHome(t), "--json"}, &stdout, &stderr); code == 0 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "scan skill roots") {
+		t.Fatalf("missing root exit=%d stdout=%q stderr=%s", code, stdout.String(), stderr.String())
 	}
 }
 

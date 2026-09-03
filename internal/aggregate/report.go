@@ -4,6 +4,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/xkumiyu/agentstats/internal/skillinventory"
 	"github.com/xkumiyu/agentstats/internal/usage"
 )
 
@@ -53,10 +54,13 @@ type SkillRow struct {
 }
 
 type Report struct {
-	Overview Overview
-	Tools    []ToolRow
-	Skills   []SkillRow
-	Warnings []usage.Warning
+	Overview        Overview
+	Tools           []ToolRow
+	Skills          []SkillRow
+	UnusedSkills    []skillinventory.InventoryEntry
+	InstalledSkills int
+	UnusedRoots     []string
+	Warnings        []usage.Warning
 }
 
 // BuildOverview computes all aggregate views from normalized turns. The
@@ -108,6 +112,42 @@ func SkillsBy(input Input, strict bool, groupBy SkillGroupBy) []SkillRow {
 		evidence = append(evidence, turn.SkillEvidence...)
 	}
 	return aggregateSkills(groupSkillUses(usage.MergeSkillEvidence(evidence), groupBy), strict)
+}
+
+// UnusedSkills returns physical inventory entries whose canonical names do not
+// appear in the selected Skill usage view.
+func UnusedSkills(input Input, inventory []skillinventory.InventoryEntry, strict bool, groupBy SkillGroupBy) []skillinventory.InventoryEntry {
+	used := make(map[string]struct{})
+	for _, row := range SkillsBy(input, strict, groupBy) {
+		used[row.Name] = struct{}{}
+	}
+	result := make([]skillinventory.InventoryEntry, 0, len(inventory))
+	for _, entry := range inventory {
+		if _, ok := used[entry.Name]; ok {
+			continue
+		}
+		result = append(result, entry)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Name == result[j].Name {
+			return result[i].Path < result[j].Path
+		}
+		return result[i].Name < result[j].Name
+	})
+	return result
+}
+
+// BuildUnusedReport combines a filesystem snapshot with the selected history
+// view while keeping inventory rows separate from usage rows.
+func BuildUnusedReport(input Input, snapshot skillinventory.InventorySnapshot, strict bool, groupBy SkillGroupBy) Report {
+	result := Report{
+		UnusedSkills:    UnusedSkills(input, snapshot.Entries, strict, groupBy),
+		InstalledSkills: snapshot.InstalledCount,
+		UnusedRoots:     append([]string(nil), snapshot.Roots...),
+		Warnings:        append([]usage.Warning(nil), input.Warnings...),
+	}
+	result.Warnings = append(result.Warnings, snapshot.Warnings...)
+	return result
 }
 
 func groupSkillUses(uses []usage.SkillUse, groupBy SkillGroupBy) []usage.SkillUse {

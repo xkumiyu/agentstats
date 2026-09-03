@@ -65,6 +65,32 @@ shell          42         0  2026-09-03 14:20 JST
 
 起動方法と証拠の状態は別の軸です。1つの利用に複数の起動方法の証拠が含まれる場合があるため、内訳の合計が`Total`と一致しないことがあります。`--strict`を指定すると`Confirmed`だけを集計します。
 
+## Tips
+
+### 使っていないSkillを列挙する
+
+組み込みの未使用viewを使います。
+
+```sh
+agentstats skills --unused
+```
+
+既定では`~/.agents/skills`だけをrecursiveに探索します。ただし、対象は`.agents/skills`、`.codex/skills`、`.codex/skills/.system`、既知のplugin cache layoutに限られます。既定ディレクトリが存在しない場合は、空のscopeとして扱います。
+
+リポジトリ内のSkillを対象にする場合は、リポジトリを置いている親ディレクトリを`--root`で指定します。`--root`は複数回指定でき、指定した場合は既定rootを追加せず置き換えます。
+
+```sh
+# ~/src配下の全リポジトリ:
+agentstats skills --unused --root ~/src
+
+# 個人Skillと~/src配下のリポジトリ:
+agentstats skills --unused --root ~/.agents/skills --root ~/src
+```
+
+`--json`で機械可読なrowsを出力できます。`--strict`は`Confirmed`の履歴だけを使用済みとし、`--days 30`は直近30日間の履歴だけを比較対象にします。
+
+有効な`SKILL.md`のfrontmatterに`name`があればcanonical nameとして使い、ない場合や無効な場合はSkillディレクトリ名へfallbackします。JSONには`name_source`と`name_mismatch`も含まれるため、frontmatterとディレクトリ名の差を確認できます。比較は大文字小文字を変換しない完全一致です。従来の`find`/`jq`による手動比較は不要です。手動でfilesystemを確認する場合は、互換性の高い`find`が便利です。`fd`はインストール済みなら高速で扱いやすい一方、hidden・gitignore対象も含めるため`fd -H -I`（または`fd -u`）を指定してください。
+
 ## データの扱い
 
 Codexホーム配下の履歴だけを読み取り、元のファイルは変更しません。履歴を外部へ送信せず、通常の出力にユーザー本文、コマンド本文、その他のraw event詳細を含めません。

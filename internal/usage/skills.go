@@ -2,6 +2,7 @@ package usage
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,6 +20,8 @@ var (
 	skillNameRE          = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 	qualifiedSkillNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*(?::[A-Za-z0-9][A-Za-z0-9_.-]*)*$`)
 )
+
+const maxSkillFileBytes = 128 * 1024
 
 // DetectInjectedSkills recognizes an explicit structured <skill> block. It is
 // kept as the compatibility helper for callers that already know the block is
@@ -193,8 +196,13 @@ func FrontmatterSkillName(path string) string {
 	if pathName == "" || !strings.EqualFold(filepath.Base(path), "SKILL.md") || !knownSkillRoot(path) {
 		return ""
 	}
-	data, err := os.ReadFile(path)
-	if err != nil || len(data) > 128*1024 {
+	file, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxSkillFileBytes+1))
+	if err != nil || len(data) > maxSkillFileBytes {
 		return ""
 	}
 	match := frontNameRE.FindSubmatch(data)

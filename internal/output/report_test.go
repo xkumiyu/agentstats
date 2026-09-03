@@ -2,6 +2,7 @@ package output
 
 import (
 	"encoding/json"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/xkumiyu/agentstats/internal/aggregate"
+	"github.com/xkumiyu/agentstats/internal/skillinventory"
 	"github.com/xkumiyu/agentstats/internal/usage"
 )
 
@@ -345,6 +347,125 @@ func TestSkillReportShowsGroupingUnit(t *testing.T) {
 	got := RenderHuman("skills", ctx, report, TerminalCapabilities{Width: 80, ColorMode: ColorNever})
 	if !strings.Contains(got, "Group by: session") {
 		t.Fatalf("grouping unit missing: %s", got)
+	}
+}
+
+func TestUnusedSkillJSONHasDiscriminatedInventoryRows(t *testing.T) {
+	ctx := ReportContext{
+		Agent:     "codex",
+		Period:    "last 30 days",
+		Strict:    true,
+		SkillView: SkillViewUnused,
+	}
+	report := aggregate.Report{
+		UnusedSkills: []skillinventory.InventoryEntry{
+			{Name: "alpha", Path: "/skills/alpha-dir", NameSource: skillinventory.NameSourceFrontmatter, NameMismatch: true},
+		},
+		InstalledSkills: 2,
+		UnusedRoots:     []string{"/skills"},
+	}
+	data, err := RenderJSON("skills", ctx, report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		View           string   `json:"view"`
+		Roots          []string `json:"roots"`
+		InstalledCount int      `json:"installed_count"`
+		UnusedCount    int      `json:"unused_count"`
+		Rows           []struct {
+			Name         string `json:"name"`
+			Path         string `json:"path"`
+			NameSource   string `json:"name_source"`
+			NameMismatch bool   `json:"name_mismatch"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.View != "unused" || !reflect.DeepEqual(decoded.Roots, []string{"/skills"}) || decoded.InstalledCount != 2 || decoded.UnusedCount != 1 {
+		t.Fatalf("unused JSON metadata = %#v", decoded)
+	}
+	if len(decoded.Rows) != 1 || decoded.Rows[0].Name != "alpha" || decoded.Rows[0].Path != "/skills/alpha-dir" || decoded.Rows[0].NameSource != "frontmatter" || !decoded.Rows[0].NameMismatch {
+		t.Fatalf("unused JSON rows = %#v", decoded.Rows)
+	}
+	if strings.Contains(string(data), "directory_name") || strings.Contains(string(data), "explicit") || strings.Contains(string(data), "total") {
+		t.Fatalf("unused JSON contains usage row fields: %s", data)
+	}
+}
+
+func TestUnusedSkillJSONUsesAnEmptyArray(t *testing.T) {
+	ctx := ReportContext{Agent: "codex", Period: "all time", SkillView: SkillViewUnused}
+	data, err := RenderJSON("skills", ctx, aggregate.Report{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"rows": []`) {
+		t.Fatalf("unused JSON rows is not an empty array: %s", data)
+	}
+}
+
+func TestUnusedSkillHumanReportShowsScopeIdentityAndCounts(t *testing.T) {
+	ctx := ReportContext{
+		Agent:      "codex",
+		Period:     "last 30 days",
+		Strict:     true,
+		SkillView:  SkillViewUnused,
+		SkillRoots: []string{"/workspace/.agents/skills"},
+	}
+	report := aggregate.Report{
+		UnusedSkills: []skillinventory.InventoryEntry{{
+			Name:         "canonical-name",
+			Path:         "/workspace/.agents/skills/directory-name",
+			NameSource:   skillinventory.NameSourceFrontmatter,
+			NameMismatch: true,
+		}},
+		InstalledSkills: 2,
+	}
+	got := RenderHuman("skills", ctx, report, TerminalCapabilities{Width: 120, ColorMode: ColorNever})
+	for _, want := range []string{"UNUSED SKILLS", "Period: last 30 days", "Strict: true", "Roots: /workspace/.agents/skills", "canonical-name", "/workspace/.agents/skills/directory-name", "1 unused skill, 2 installed skills total"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("unused report does not contain %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "SKILL USAGE") {
+		t.Fatalf("unused report used usage heading: %s", got)
+	}
+	if strings.Contains(got, "Rows:") || strings.Contains(got, " · ") {
+		t.Fatalf("unused report contains obsolete footer syntax: %s", got)
+	}
+	if strings.Contains(got, "Directory") {
+		t.Fatalf("unused report contains redundant Directory column: %s", got)
+	}
+}
+
+func TestUnusedSkillHumanReportDistinguishesEmptyInventoryAndAllUsed(t *testing.T) {
+	ctx := ReportContext{Agent: "codex", SkillView: SkillViewUnused, SkillRoots: []string{"/skills"}}
+	empty := RenderHuman("skills", ctx, aggregate.Report{}, TerminalCapabilities{Width: 80, ColorMode: ColorNever})
+	if !strings.Contains(empty, "No installed skills found for the selected scope.") {
+		t.Fatalf("empty inventory message = %s", empty)
+	}
+	allUsed := RenderHuman("skills", ctx, aggregate.Report{InstalledSkills: 2}, TerminalCapabilities{Width: 80, ColorMode: ColorNever})
+	if !strings.Contains(allUsed, "No unused skills found for the selected scope and history filter.") {
+		t.Fatalf("all-used message = %s", allUsed)
+	}
+}
+
+func TestUnusedSkillHumanReportFitsNarrowTerminal(t *testing.T) {
+	ctx := ReportContext{Agent: "codex", SkillView: SkillViewUnused, SkillRoots: []string{"/skills"}}
+	report := aggregate.Report{UnusedSkills: []skillinventory.InventoryEntry{{
+		Name:       "very-long-unused-skill-name-日本語",
+		Path:       "/workspace/.agents/skills/very-long-directory-name",
+		NameSource: skillinventory.NameSourceDirectory,
+	}}}
+	got := RenderHuman("skills", ctx, report, TerminalCapabilities{Width: 60, ColorMode: ColorNever})
+	if !strings.Contains(got, "Skill") || !strings.Contains(got, "Path") || !strings.Contains(got, "…") {
+		t.Fatalf("narrow unused report lost required fields: %s", got)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(got), "\n") {
+		if lipgloss.Width(line) > 60 {
+			t.Errorf("narrow unused line too wide: %d: %q", lipgloss.Width(line), line)
+		}
 	}
 }
 

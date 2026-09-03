@@ -15,6 +15,7 @@ import (
 	"github.com/xkumiyu/agentstats/internal/aggregate"
 	"github.com/xkumiyu/agentstats/internal/codex"
 	"github.com/xkumiyu/agentstats/internal/output"
+	"github.com/xkumiyu/agentstats/internal/skillinventory"
 	"github.com/xkumiyu/agentstats/internal/usage"
 	appversion "github.com/xkumiyu/agentstats/internal/version"
 )
@@ -76,6 +77,8 @@ Options:
   --color MODE      auto, always, or never (human report only)
   --group-by UNIT   turn or session
   --strict          Count confirmed skill evidence only
+  --unused          Show installed skills with no recorded usage
+  --root PATH       Scan a skill root (repeatable; only with --unused)
   --verbose         Show input warning details
   --strict-input    Exit non-zero when input records are skipped
   --json            Emit JSON
@@ -102,6 +105,20 @@ func hasOption(args []string, option string) bool {
 		}
 	}
 	return false
+}
+
+type stringList []string
+
+func (values *stringList) String() string {
+	return strings.Join(*values, ",")
+}
+
+func (values *stringList) Set(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return errors.New("skill root is empty")
+	}
+	*values = append(*values, value)
+	return nil
 }
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
@@ -152,6 +169,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	layer := flags.String("layer", string(usage.LayerEffective), "tool layer")
 	groupBy := flags.String("group-by", string(aggregate.SkillGroupByTurn), "skill aggregation unit")
 	strict := flags.Bool("strict", false, "count confirmed skills only")
+	unused := flags.Bool("unused", false, "show installed skills with no recorded usage")
+	var roots stringList
+	flags.Var(&roots, "root", "scan a skill root (repeatable; only with --unused)")
 	verbose := flags.Bool("verbose", false, "show input warning details")
 	strictInput := flags.Bool("strict-input", false, "exit non-zero when input records are skipped")
 	jsonOutput := flags.Bool("json", false, "emit JSON")
@@ -196,6 +216,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		diagnostics.errorf("--strict is only valid for skills")
 		return 2
 	}
+	if kind != "skills" && *unused {
+		_, _ = fmt.Fprintln(stderr, "error: --unused is only valid for skills")
+		return 2
+	}
+	if len(roots) > 0 && (kind != "skills" || !*unused) {
+		_, _ = fmt.Fprintln(stderr, "error: --root is only valid with --unused for skills")
+		return 2
+	}
 	if *days < 0 {
 		diagnostics.errorf("--days must be at least 1")
 		return 2
@@ -223,18 +251,48 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	aggregateInput := aggregate.Input{Turns: input.Turns, SessionCount: len(input.Sessions), Warnings: input.Warnings}
-	report := aggregate.BuildOverviewBy(aggregateInput, selectedGroupBy)
-	if kind == "tools" {
-		report.Tools = aggregate.Tools(aggregateInput, selectedLayer)
-	}
-	if kind == "skills" {
-		report.Skills = aggregate.SkillsBy(aggregateInput, *strict, selectedGroupBy)
+	report := aggregate.Report{}
+	warnings := input.Warnings
+	var inventorySnapshot skillinventory.InventorySnapshot
+	if *unused {
+		userHome, err := os.UserHomeDir()
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "error: resolve user home for skill inventory: %v\n", err)
+			return 1
+		}
+		resolvedRoots, err := skillinventory.ResolveRoots([]string(roots), userHome)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "error: resolve skill roots: %v\n", err)
+			return 1
+		}
+		inventorySnapshot, err = skillinventory.Discover(skillinventory.DiscoverOptions{
+			Roots:             resolvedRoots,
+			AllowMissingRoots: len(roots) == 0,
+		})
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "error: scan skill roots: %v\n", err)
+			return 1
+		}
+		report = aggregate.BuildUnusedReport(aggregateInput, inventorySnapshot, *strict, selectedGroupBy)
+		warnings = report.Warnings
+	} else {
+		report = aggregate.BuildOverviewBy(aggregateInput, selectedGroupBy)
+		if kind == "tools" {
+			report.Tools = aggregate.Tools(aggregateInput, selectedLayer)
+		}
+		if kind == "skills" {
+			report.Skills = aggregate.SkillsBy(aggregateInput, *strict, selectedGroupBy)
+		}
 	}
 	period := "all time"
 	if daysSet {
 		period = fmt.Sprintf("last %d days", *days)
 	}
 	context := output.ReportContext{Agent: "codex", Period: period, Layer: selectedLayer, SkillGroupBy: selectedGroupBy, Strict: *strict, ReferenceTime: now, Location: time.Local}
+	if *unused {
+		context.SkillView = output.SkillViewUnused
+		context.SkillRoots = append([]string{}, inventorySnapshot.Roots...)
+	}
 	if *jsonOutput {
 		if err := output.WriteJSON(stdout, kind, context, report); err != nil {
 			diagnostics.errorf("render json: %v", err)
@@ -251,8 +309,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
-	writeWarnings(stderr, input.Warnings, *verbose, diagnostics.capabilities)
-	if *strictInput && len(input.Warnings) > 0 {
+	writeWarnings(stderr, warnings, *verbose, diagnostics.capabilities)
+	if *strictInput && len(warnings) > 0 {
 		diagnostics.errorf("input warnings encountered (--strict-input)")
 		return 1
 	}

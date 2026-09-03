@@ -1,9 +1,11 @@
 package aggregate
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
+	"github.com/xkumiyu/agentstats/internal/skillinventory"
 	"github.com/xkumiyu/agentstats/internal/usage"
 )
 
@@ -110,5 +112,85 @@ func TestSkillsCanGroupEachSkillOncePerSession(t *testing.T) {
 	row := rows[0]
 	if row.Total != 2 || row.Explicit != 1 || row.Implicit != 1 || row.Unknown != 1 || row.Confirmed != 2 || row.Inferred != 0 {
 		t.Fatalf("session skill count = %#v", row)
+	}
+}
+
+func TestUnusedSkillsMatchesCanonicalNamesAndPreservesPhysicalEntries(t *testing.T) {
+	stamp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	turns := []usage.Turn{
+		{SessionID: "s", ID: "used", SkillEvidence: []usage.SkillEvidence{
+			usage.NewSkillEvidence("s", "used", "used", usage.ModeExplicit, usage.MethodExplicitInjected, usage.StateConfirmed, stamp, usage.SourceRef{}),
+		}},
+		{SessionID: "s", ID: "inferred", SkillEvidence: []usage.SkillEvidence{
+			usage.NewSkillEvidence("s", "inferred", "inferred", usage.ModeImplicit, usage.MethodImplicitAccess, usage.StateInferred, stamp, usage.SourceRef{}),
+		}},
+		{SessionID: "s", ID: "shared", SkillEvidence: []usage.SkillEvidence{
+			usage.NewSkillEvidence("s", "shared", "shared", usage.ModeExplicit, usage.MethodExplicitInjected, usage.StateConfirmed, stamp, usage.SourceRef{}),
+		}},
+	}
+	inventory := []skillinventory.InventoryEntry{
+		{Name: "used", Path: "/one/used"},
+		{Name: "inferred", Path: "/one/inferred"},
+		{Name: "canonical-name", Path: "/one/directory-name"},
+		{Name: "shared", Path: "/one/shared"},
+		{Name: "shared", Path: "/two/shared"},
+		{Name: "unused", Path: "/one/unused"},
+	}
+
+	want := []skillinventory.InventoryEntry{
+		inventory[2],
+		inventory[5],
+	}
+	got := UnusedSkills(Input{Turns: turns}, inventory, false, SkillGroupByTurn)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("UnusedSkills() = %#v, want %#v", got, want)
+	}
+	strict := UnusedSkills(Input{Turns: turns}, inventory, true, SkillGroupBySession)
+	if !reflect.DeepEqual(strict, []skillinventory.InventoryEntry{inventory[2], inventory[1], inventory[5]}) {
+		t.Fatalf("UnusedSkills(strict) = %#v", strict)
+	}
+}
+
+func TestUnusedSkillsMembershipDoesNotDependOnGrouping(t *testing.T) {
+	stamp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	turns := []usage.Turn{
+		{SessionID: "s", ID: "t1", SkillEvidence: []usage.SkillEvidence{
+			usage.NewSkillEvidence("s", "t1", "used", usage.ModeImplicit, usage.MethodImplicitAccess, usage.StateInferred, stamp, usage.SourceRef{}),
+		}},
+		{SessionID: "s", ID: "t2", SkillEvidence: []usage.SkillEvidence{
+			usage.NewSkillEvidence("s", "t2", "used", usage.ModeExplicit, usage.MethodExplicitInjected, usage.StateConfirmed, stamp.Add(time.Second), usage.SourceRef{}),
+		}},
+	}
+	inventory := []skillinventory.InventoryEntry{
+		{Name: "used", Path: "/used"},
+		{Name: "unused", Path: "/unused"},
+	}
+	turn := UnusedSkills(Input{Turns: turns}, inventory, false, SkillGroupByTurn)
+	session := UnusedSkills(Input{Turns: turns}, inventory, false, SkillGroupBySession)
+	if !reflect.DeepEqual(turn, session) {
+		t.Fatalf("grouping changed unused membership: turn=%#v session=%#v", turn, session)
+	}
+}
+
+func TestBuildUnusedReportKeepsInventoryMetadataSeparateFromUsageRows(t *testing.T) {
+	stamp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	entry := skillinventory.InventoryEntry{Name: "unused", Path: "/skills/unused"}
+	snapshot := skillinventory.InventorySnapshot{
+		Roots:          []string{"/skills"},
+		InstalledCount: 1,
+		Entries:        []skillinventory.InventoryEntry{entry},
+		Warnings:       []usage.Warning{{Reason: "walk warning", Type: "skill_inventory_walk", Path: "/skills/skip", Count: 1}},
+	}
+	report := BuildUnusedReport(Input{Turns: []usage.Turn{{SkillEvidence: []usage.SkillEvidence{
+		usage.NewSkillEvidence("s", "t", "used", usage.ModeExplicit, usage.MethodExplicitInjected, usage.StateConfirmed, stamp, usage.SourceRef{}),
+	}}}}, snapshot, false, SkillGroupByTurn)
+	if !reflect.DeepEqual(report.UnusedSkills, []skillinventory.InventoryEntry{entry}) {
+		t.Fatalf("UnusedSkills = %#v", report.UnusedSkills)
+	}
+	if report.InstalledSkills != 1 || !reflect.DeepEqual(report.UnusedRoots, snapshot.Roots) {
+		t.Fatalf("inventory metadata = installed:%d roots:%#v", report.InstalledSkills, report.UnusedRoots)
+	}
+	if len(report.Skills) != 0 || len(report.Warnings) != 1 {
+		t.Fatalf("usage rows/warnings = skills:%#v warnings:%#v", report.Skills, report.Warnings)
 	}
 }

@@ -65,6 +65,36 @@ shell          42         0  2026-09-03 14:20 JST
 
 Mode and state are independent. A single usage can have evidence for more than one mode, so the mode counts do not always add up to `Total`. `--strict` includes only `Confirmed` usage.
 
+## Tips
+
+### List skills with no recorded usage
+
+Use the built-in unused view:
+
+```sh
+agentstats skills --unused
+```
+
+By default, only `~/.agents/skills` is scanned. The scan is recursive, but only recognized `.agents/skills`, `.codex/skills`, `.codex/skills/.system`, and plugin-cache layouts are included. An absent default directory is treated as an empty scope.
+
+Use `--root` to scan repository-local Skills. It can be repeated; specifying it replaces the default root rather than adding to it:
+
+```sh
+# All repositories below ~/src:
+agentstats skills --unused --root ~/src
+
+# Personal Skills plus repositories below ~/src:
+agentstats skills --unused --root ~/.agents/skills --root ~/src
+```
+
+Add `--json` for machine-readable rows, `--strict` to count only `Confirmed` history, or `--days 30` to compare against the last 30 days:
+
+```sh
+agentstats skills --unused --strict --days 30 --json
+```
+
+When a valid `SKILL.md` frontmatter `name` exists, it is used as the canonical name; otherwise the Skill directory name is used. The JSON output includes `name_source` and `name_mismatch` so frontmatter and directory-name differences are visible. Matching is exact and case-sensitive. The built-in command avoids the old manual `find`/`jq` comparison. For ad-hoc filesystem inspection, `find` is the most portable choice; `fd` is faster and friendlier when available, but use `fd -H -I` (or `fd -u`) to include hidden and ignored paths.
+
 ## Data handling
 
 agentstats reads only history under the Codex home directory and never modifies those files. It does not send history externally, and normal reports do not include prompt text, command text, or other raw event details.

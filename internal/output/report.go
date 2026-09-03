@@ -13,6 +13,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/xkumiyu/agentstats/internal/aggregate"
+	"github.com/xkumiyu/agentstats/internal/skillinventory"
 	"github.com/xkumiyu/agentstats/internal/usage"
 	"golang.org/x/term"
 )
@@ -34,6 +35,14 @@ type TerminalCapabilities struct {
 	ColorMode    ColorMode
 	NoColor      bool
 }
+
+// SkillView selects the report rendered by the skills command.
+type SkillView string
+
+const (
+	SkillViewUsage  SkillView = "usage"
+	SkillViewUnused SkillView = "unused"
+)
 
 var ansiSequenceRE = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
 
@@ -71,6 +80,8 @@ type ReportContext struct {
 	Period        string
 	Layer         usage.ToolLayer
 	SkillGroupBy  aggregate.SkillGroupBy
+	SkillView     SkillView
+	SkillRoots    []string
 	Strict        bool
 	ReferenceTime time.Time
 	Location      *time.Location
@@ -105,8 +116,11 @@ func RenderHuman(kind string, ctx ReportContext, report aggregate.Report, capabi
 	if width <= 0 {
 		width = 80
 	}
+	if ctx.SkillView == SkillViewUnused && len(ctx.SkillRoots) == 0 {
+		ctx.SkillRoots = append([]string{}, report.UnusedRoots...)
+	}
 	styled := capabilities.ColorsEnabled()
-	heading := reportHeading(kind)
+	heading := reportHeading(kind, ctx)
 	if heading == "" {
 		return ""
 	}
@@ -118,18 +132,27 @@ func RenderHuman(kind string, ctx ReportContext, report aggregate.Report, capabi
 	case "tools":
 		lines = append(lines, "", renderTools(report.Tools, ctx, width, styled), "", styleFooter(toolFooter(report.Tools), styled))
 	case "skills":
-		lines = append(lines, "", renderSkills(report.Skills, ctx, width, styled), "", styleFooter(skillFooter(report.Skills), styled))
+		if ctx.SkillView == SkillViewUnused {
+			lines = append(lines, "", renderUnusedSkills(report.UnusedSkills, report.InstalledSkills, width, styled), "", styleFooter(unusedSkillFooter(report.UnusedSkills, report.InstalledSkills), styled))
+		} else {
+			lines = append(lines, "", renderSkills(report.Skills, ctx, width, styled), "", styleFooter(skillFooter(report.Skills), styled))
+		}
+	default:
+		return ""
 	}
 	return strings.TrimRight(strings.Join(lines, "\n"), "\n") + "\n"
 }
 
-func reportHeading(kind string) string {
+func reportHeading(kind string, ctx ReportContext) string {
 	switch kind {
 	case "stats":
 		return "USAGE OVERVIEW"
 	case "tools":
 		return "TOOL USAGE"
 	case "skills":
+		if ctx.SkillView == SkillViewUnused {
+			return "UNUSED SKILLS"
+		}
 		return "SKILL USAGE"
 	default:
 		return ""
@@ -146,6 +169,17 @@ func contextLines(kind string, ctx ReportContext, styled bool) []string {
 		}
 		parts = append(parts, "Layer: "+string(layer))
 	case "skills":
+		if ctx.SkillView == SkillViewUnused {
+			parts = append(parts, "Strict: "+strconv.FormatBool(ctx.Strict))
+			if len(ctx.SkillRoots) > 0 {
+				roots := make([]string, 0, len(ctx.SkillRoots))
+				for _, root := range ctx.SkillRoots {
+					roots = append(roots, safeDisplay(root))
+				}
+				parts = append(parts, "Roots: "+strings.Join(roots, ", "))
+			}
+			break
+		}
 		parts = append(parts, "Group by: "+string(contextSkillGroupBy(ctx)))
 		parts = append(parts, "Strict: "+strconv.FormatBool(ctx.Strict))
 	case "stats":
@@ -277,6 +311,96 @@ func renderSkills(rows []aggregate.SkillRow, ctx ReportContext, width int, style
 		lines = append(lines, padRight(name, nameWidth)+"  "+padLeft(formatCount(row.Explicit), 8)+"  "+padLeft(formatCount(row.Implicit), 8)+"  "+padLeft(formatCount(row.Unknown), 8)+"  "+padLeft(formatCount(row.Confirmed), 9)+"  "+padLeft(formatCount(row.Inferred), 8)+"  "+padLeft(formatCount(row.Unconfirmed), 11)+"  "+padLeft(formatCount(row.Total), 7)+"  "+padLeft(lastUsed, 22))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func renderUnusedSkills(rows []skillinventory.InventoryEntry, installed int, width int, styled bool) string {
+	if len(rows) == 0 {
+		if installed == 0 {
+			return styleNotice("No installed skills found for the selected scope.", styled)
+		}
+		return styleNotice("No unused skills found for the selected scope and history filter.", styled)
+	}
+	if width < 70 {
+		nameWidth := minDisplayWidth(maxUnusedNameWidth(rows), maxInt(8, (width-10)/2))
+		pathWidth := maxInt(8, width-nameWidth-2)
+		lines := []string{padRight(styleHeader("Skill", styled), nameWidth) + "  " + padRight(styleHeader("Path", styled), pathWidth)}
+		for _, row := range rows {
+			lines = append(lines, padRight(truncate(unusedNameDisplay(row), nameWidth), nameWidth)+"  "+padRight(truncate(safeDisplay(row.Path), pathWidth), pathWidth))
+		}
+		return strings.Join(appendUnusedMismatchNote(lines, rows, styled), "\n")
+	}
+
+	if width < 110 {
+		nameWidth := minDisplayWidth(maxUnusedNameWidth(rows), 32)
+		nameWidth, pathWidth := fitUnusedColumns(width, nameWidth, 0, 1)
+		lines := []string{padRight(styleHeader("Skill", styled), nameWidth) + "  " + padRight(styleHeader("Path", styled), pathWidth)}
+		for _, row := range rows {
+			lines = append(lines, padRight(truncate(unusedNameDisplay(row), nameWidth), nameWidth)+"  "+padRight(truncate(safeDisplay(row.Path), pathWidth), pathWidth))
+		}
+		return strings.Join(appendUnusedMismatchNote(lines, rows, styled), "\n")
+	}
+
+	nameWidth := minDisplayWidth(maxUnusedNameWidth(rows), 40)
+	sourceWidth := len(string(skillinventory.NameSourceFrontmatter))
+	nameWidth, pathWidth := fitUnusedColumns(width, nameWidth, sourceWidth, 2)
+	lines := []string{padRight(styleHeader("Skill", styled), nameWidth) + "  " + padRight(styleHeader("Path", styled), pathWidth) + "  " + padRight(styleHeader("Source", styled), sourceWidth)}
+	for _, row := range rows {
+		lines = append(lines, padRight(truncate(unusedNameDisplay(row), nameWidth), nameWidth)+"  "+padRight(truncate(safeDisplay(row.Path), pathWidth), pathWidth)+"  "+padRight(string(row.NameSource), sourceWidth))
+	}
+	return strings.Join(appendUnusedMismatchNote(lines, rows, styled), "\n")
+}
+
+func maxUnusedNameWidth(rows []skillinventory.InventoryEntry) int {
+	max := 8
+	for _, row := range rows {
+		if width := lipgloss.Width(unusedNameDisplay(row)); width > max {
+			max = width
+		}
+	}
+	return max
+}
+
+func unusedNameDisplay(row skillinventory.InventoryEntry) string {
+	name := safeDisplay(row.Name)
+	if row.NameMismatch {
+		name += "*"
+	}
+	return name
+}
+
+func fitUnusedColumns(width, nameWidth, sourceWidth, gaps int) (int, int) {
+	pathWidth := width - nameWidth - sourceWidth - gaps*2
+	for pathWidth < 8 && nameWidth > 8 {
+		nameWidth--
+		pathWidth++
+	}
+	if pathWidth < 8 {
+		pathWidth = 8
+	}
+	return nameWidth, pathWidth
+}
+
+func appendUnusedMismatchNote(lines []string, rows []skillinventory.InventoryEntry, styled bool) []string {
+	for _, row := range rows {
+		if row.NameMismatch {
+			return append(lines, styleNotice("* frontmatter name differs from directory name", styled))
+		}
+	}
+	return lines
+}
+
+func minDisplayWidth(value, limit int) int {
+	if value > limit {
+		return limit
+	}
+	return value
+}
+
+func maxInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func maxNameWidth(available int, rows []aggregate.ToolRow, name func(aggregate.ToolRow) string) int {
@@ -486,6 +610,10 @@ func skillFooter(rows []aggregate.SkillRow) string {
 	return formatQuantity(len(rows), "skill", "skills") + ", " + formatQuantity(totalSkillUses(rows), "use", "uses") + " total"
 }
 
+func unusedSkillFooter(rows []skillinventory.InventoryEntry, installed int) string {
+	return formatQuantity(len(rows), "unused skill", "unused skills") + ", " + formatQuantity(installed, "installed skill", "installed skills") + " total"
+}
+
 func totalToolCalls(rows []aggregate.ToolRow) int {
 	result := 0
 	for _, row := range rows {
@@ -538,6 +666,27 @@ func RenderJSON(kind string, ctx ReportContext, report aggregate.Report) ([]byte
 		}{base.SchemaVersion, base.Agent, base.Period, formatMachineTime(ctx.ReferenceTime), string(contextLayer(ctx)), rows}
 		return json.MarshalIndent(value, "", "  ")
 	case "skills":
+		if ctx.SkillView == SkillViewUnused {
+			rows := make([]unusedSkillJSON, 0, len(report.UnusedSkills))
+			for _, row := range report.UnusedSkills {
+				rows = append(rows, unusedSkillJSON{row.Name, row.Path, string(row.NameSource), row.NameMismatch})
+			}
+			roots := append([]string{}, report.UnusedRoots...)
+			value := struct {
+				SchemaVersion  int               `json:"schema_version"`
+				Agent          string            `json:"agent"`
+				Period         string            `json:"period"`
+				GeneratedAt    string            `json:"generated_at"`
+				Strict         bool              `json:"strict"`
+				GroupBy        string            `json:"group_by"`
+				View           string            `json:"view"`
+				Roots          []string          `json:"roots"`
+				InstalledCount int               `json:"installed_count"`
+				UnusedCount    int               `json:"unused_count"`
+				Rows           []unusedSkillJSON `json:"rows"`
+			}{base.SchemaVersion, base.Agent, base.Period, formatMachineTime(ctx.ReferenceTime), ctx.Strict, string(contextSkillGroupBy(ctx)), string(SkillViewUnused), roots, report.InstalledSkills, len(rows), rows}
+			return json.MarshalIndent(value, "", "  ")
+		}
 		rows := make([]skillJSON, 0, len(report.Skills))
 		for _, row := range report.Skills {
 			rows = append(rows, skillJSON{row.Name, row.Explicit, row.Implicit, row.Unknown, row.Confirmed, row.Inferred, row.Unconfirmed, row.Total, formatMachineTime(row.LastUsed)})
@@ -581,6 +730,13 @@ type skillJSON struct {
 	Unconfirmed int    `json:"unconfirmed"`
 	Total       int    `json:"total"`
 	LastUsed    string `json:"last_used"`
+}
+
+type unusedSkillJSON struct {
+	Name         string `json:"name"`
+	Path         string `json:"path"`
+	NameSource   string `json:"name_source"`
+	NameMismatch bool   `json:"name_mismatch"`
 }
 
 // WriteJSON writes machine-readable output without adding ANSI sequences.
