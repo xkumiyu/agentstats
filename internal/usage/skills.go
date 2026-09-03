@@ -200,7 +200,7 @@ func FrontmatterSkillName(path string) string {
 	if err != nil {
 		return ""
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	data, err := io.ReadAll(io.LimitReader(file, maxSkillFileBytes+1))
 	if err != nil || len(data) > maxSkillFileBytes {
 		return ""
