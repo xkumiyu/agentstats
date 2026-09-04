@@ -7,7 +7,23 @@ agentstats is a command-line tool for inspecting Codex usage. It aggregates loca
 > [!NOTE]
 > Currently, agentstats supports Codex history.
 
+## Quick start
+
+```sh
+npx @xkumiyu/agentstats
+```
+
 ## Installation
+
+Install with npm:
+
+```sh
+npm install --global @xkumiyu/agentstats
+```
+
+Or download from [GitHub Releases](https://github.com/xkumiyu/agentstats/releases).
+
+Or install from source:
 
 ```sh
 go install github.com/xkumiyu/agentstats/cmd/agentstats@latest

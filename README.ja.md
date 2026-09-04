@@ -7,7 +7,23 @@ agentstatsは、Codexの利用状況を確認するコマンドラインツー�
 > [!NOTE]
 > 現在はCodexの履歴を対象としています。
 
+## クイックスタート
+
+```sh
+npx @xkumiyu/agentstats
+```
+
 ## インストール
+
+npmでインストールします。
+
+```sh
+npm install --global @xkumiyu/agentstats
+```
+
+または、[GitHub Releases](https://github.com/xkumiyu/agentstats/releases)からダウンロードできます。
+
+または、ソースからインストールできます。
 
 ```sh
 go install github.com/xkumiyu/agentstats/cmd/agentstats@latest

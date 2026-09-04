@@ -9,3 +9,4 @@
 # Local build output
 /agentstats
 /bin/
+/dist/

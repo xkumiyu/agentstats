@@ -42,3 +42,21 @@ jobs:
 
       - name: Build
         run: go build ./...
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test npm package
+        run: npm test --prefix npm
+
+      - name: Pack npm package
+        run: npm pack ./npm --dry-run --ignore-scripts
+
+      - name: Check GoReleaser configuration
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check

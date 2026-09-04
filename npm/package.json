@@ -1,0 +1,39 @@
+{
+  "name": "@xkumiyu/agentstats",
+  "version": "0.0.0",
+  "description": "CLI for inspecting Codex usage",
+  "bin": {
+    "agentstats": "bin/agentstats.js"
+  },
+  "files": [
+    "bin",
+    "scripts",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xkumiyu/agentstats.git"
+  },
+  "homepage": "https://github.com/xkumiyu/agentstats",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "scripts": {
+    "test": "node --test",
+    "prepublishOnly": "npm test",
+    "postinstall": "node scripts/install.js"
+  }
+}
