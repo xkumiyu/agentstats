@@ -262,7 +262,9 @@ func contextLines(kind string, ctx ReportContext, effectiveSkillUsageView SkillU
 		parts = append(parts, "Layer: "+string(layer))
 	case "skills":
 		if ctx.SkillView == SkillViewUnused {
+			parts = append(parts, "Group by: "+string(contextSkillGroupBy(ctx)))
 			parts = append(parts, "Strict: "+strconv.FormatBool(ctx.Strict))
+			parts = append(parts, "View: unused")
 			if len(ctx.SkillRoots) > 0 {
 				roots := make([]string, 0, len(ctx.SkillRoots))
 				for _, root := range ctx.SkillRoots {
@@ -438,8 +440,29 @@ func renderSkillMode(rows []aggregate.SkillRow, width int, styled bool) string {
 }
 
 func renderSkillState(rows []aggregate.SkillRow, ctx ReportContext, width int, styled bool) string {
+	return renderSkillStateTable(rows, ctx, width, styled, false)
+}
+
+func renderSkillStateWithLastUsed(rows []aggregate.SkillRow, ctx ReportContext, width int, styled bool) string {
+	return renderSkillStateTable(rows, ctx, width, styled, true)
+}
+
+func renderSkillStateTable(rows []aggregate.SkillRow, ctx ReportContext, width int, styled, includeLastUsed bool) string {
+	if !includeLastUsed {
+		if width < 51 {
+			return renderSkillStateDetails(rows, ctx, width, styled, false)
+		}
+		nameWidth := maxSkillNameWidth(width-43, rows)
+		header := padRight(styleHeader("Skill", styled), nameWidth) + "  " + padLeft(styleHeader("Confirmed", styled), 9) + "  " + padLeft(styleHeader("Inferred", styled), 8) + "  " + padLeft(styleHeader("Unconfirmed", styled), 11) + "  " + padLeft(styleHeader("Total", styled), 7)
+		lines := []string{header, tableRule(lipgloss.Width(header), styled)}
+		for _, row := range rows {
+			name := styleIdentity(truncate(safeDisplay(row.Name), nameWidth), styled)
+			lines = append(lines, padRight(name, nameWidth)+"  "+padLeft(formatCount(row.Confirmed), 9)+"  "+padLeft(formatCount(row.Inferred), 8)+"  "+padLeft(formatCount(row.Unconfirmed), 11)+"  "+padLeft(formatCount(row.Total), 7))
+		}
+		return strings.Join(lines, "\n")
+	}
 	if width < 75 {
-		return renderSkillStateDetails(rows, ctx, width, styled)
+		return renderSkillStateDetails(rows, ctx, width, styled, true)
 	}
 	nameWidth := maxSkillNameWidth(width-67, rows)
 	header := padRight(styleHeader("Skill", styled), nameWidth) + "  " + padLeft(styleHeader("Confirmed", styled), 9) + "  " + padLeft(styleHeader("Inferred", styled), 8) + "  " + padLeft(styleHeader("Unconfirmed", styled), 11) + "  " + padLeft(styleHeader("Total", styled), 7) + "  " + padLeft(styleHeader("Last Used", styled), 22)
@@ -458,7 +481,7 @@ func renderSkillAllSections(rows []aggregate.SkillRow, ctx ReportContext, width 
 		renderSkillMode(rows, width, styled),
 		"",
 		styleHeading("EVIDENCE STATE", styled),
-		renderSkillState(rows, ctx, width, styled),
+		renderSkillStateWithLastUsed(rows, ctx, width, styled),
 	}, "\n")
 }
 
@@ -491,20 +514,23 @@ func renderSkillModeDetails(rows []aggregate.SkillRow, width int, styled bool) s
 	return strings.Join(lines, "\n")
 }
 
-func renderSkillStateDetails(rows []aggregate.SkillRow, ctx ReportContext, width int, styled bool) string {
+func renderSkillStateDetails(rows []aggregate.SkillRow, ctx ReportContext, width int, styled, includeLastUsed bool) string {
 	lines := make([]string, 0, len(rows)*6)
 	for i, row := range rows {
 		if i > 0 {
 			lines = append(lines, "")
 		}
 		lines = append(lines, skillDetailName(row.Name, width, styled))
-		lines = append(lines,
+		fields := []string{
 			skillDetailField("Confirmed", formatCount(row.Confirmed), styled),
 			skillDetailField("Inferred", formatCount(row.Inferred), styled),
 			skillDetailField("Unconfirmed", formatCount(row.Unconfirmed), styled),
 			skillDetailField("Total", formatCount(row.Total), styled),
-			skillDetailField("Last Used", formatLocalTime(row.LastUsed, ctx.Location), styled),
-		)
+		}
+		if includeLastUsed {
+			fields = append(fields, skillDetailField("Last Used", formatLocalTime(row.LastUsed, ctx.Location), styled))
+		}
+		lines = append(lines, fields...)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -528,9 +554,12 @@ func renderUnusedSkills(rows []skillinventory.InventoryEntry, installed int, wid
 	if width < 70 {
 		nameWidth := minDisplayWidth(maxUnusedNameWidth(rows), maxInt(8, (width-10)/2))
 		pathWidth := maxInt(8, width-nameWidth-2)
-		lines := []string{padRight(styleHeader("Skill", styled), nameWidth) + "  " + padRight(styleHeader("Path", styled), pathWidth)}
+		header := padRight(styleHeader("Skill", styled), nameWidth) + "  " + padRight(styleHeader("Path", styled), pathWidth)
+		lines := []string{header, tableRule(lipgloss.Width(header), styled)}
 		for _, row := range rows {
-			lines = append(lines, padRight(truncate(unusedNameDisplay(row), nameWidth), nameWidth)+"  "+padRight(truncate(safeDisplay(row.Path), pathWidth), pathWidth))
+			name := styleIdentity(truncate(unusedNameDisplay(row), nameWidth), styled)
+			path := styleSecondary(truncate(safeDisplay(row.Path), pathWidth), styled)
+			lines = append(lines, padRight(name, nameWidth)+"  "+padRight(path, pathWidth))
 		}
 		return strings.Join(appendUnusedMismatchNote(lines, rows, styled), "\n")
 	}
@@ -538,9 +567,12 @@ func renderUnusedSkills(rows []skillinventory.InventoryEntry, installed int, wid
 	if width < 110 {
 		nameWidth := minDisplayWidth(maxUnusedNameWidth(rows), 32)
 		nameWidth, pathWidth := fitUnusedColumns(width, nameWidth, 0, 1)
-		lines := []string{padRight(styleHeader("Skill", styled), nameWidth) + "  " + padRight(styleHeader("Path", styled), pathWidth)}
+		header := padRight(styleHeader("Skill", styled), nameWidth) + "  " + padRight(styleHeader("Path", styled), pathWidth)
+		lines := []string{header, tableRule(lipgloss.Width(header), styled)}
 		for _, row := range rows {
-			lines = append(lines, padRight(truncate(unusedNameDisplay(row), nameWidth), nameWidth)+"  "+padRight(truncate(safeDisplay(row.Path), pathWidth), pathWidth))
+			name := styleIdentity(truncate(unusedNameDisplay(row), nameWidth), styled)
+			path := styleSecondary(truncate(safeDisplay(row.Path), pathWidth), styled)
+			lines = append(lines, padRight(name, nameWidth)+"  "+padRight(path, pathWidth))
 		}
 		return strings.Join(appendUnusedMismatchNote(lines, rows, styled), "\n")
 	}
@@ -548,9 +580,13 @@ func renderUnusedSkills(rows []skillinventory.InventoryEntry, installed int, wid
 	nameWidth := minDisplayWidth(maxUnusedNameWidth(rows), 40)
 	sourceWidth := len(string(skillinventory.NameSourceFrontmatter))
 	nameWidth, pathWidth := fitUnusedColumns(width, nameWidth, sourceWidth, 2)
-	lines := []string{padRight(styleHeader("Skill", styled), nameWidth) + "  " + padRight(styleHeader("Path", styled), pathWidth) + "  " + padRight(styleHeader("Source", styled), sourceWidth)}
+	header := padRight(styleHeader("Skill", styled), nameWidth) + "  " + padRight(styleHeader("Path", styled), pathWidth) + "  " + padRight(styleHeader("Source", styled), sourceWidth)
+	lines := []string{header, tableRule(lipgloss.Width(header), styled)}
 	for _, row := range rows {
-		lines = append(lines, padRight(truncate(unusedNameDisplay(row), nameWidth), nameWidth)+"  "+padRight(truncate(safeDisplay(row.Path), pathWidth), pathWidth)+"  "+padRight(string(row.NameSource), sourceWidth))
+		name := styleIdentity(truncate(unusedNameDisplay(row), nameWidth), styled)
+		path := styleSecondary(truncate(safeDisplay(row.Path), pathWidth), styled)
+		source := styleSecondary(string(row.NameSource), styled)
+		lines = append(lines, padRight(name, nameWidth)+"  "+padRight(path, pathWidth)+"  "+padRight(source, sourceWidth))
 	}
 	return strings.Join(appendUnusedMismatchNote(lines, rows, styled), "\n")
 }

@@ -43,11 +43,11 @@ Show an overview of agent usage.
 
 Options:
   --source SOURCE   codex or ctx (default: codex)
-  --days N          Include the last N days (N >= 1)
-  --codex-home PATH Override CODEX_HOME for this invocation
-  --ctx-data-root PATH Read a specific ctx data root
-  --color MODE      auto, always, or never (human report only)
-  --group-by UNIT   turn or session
+  --days N          Include the last N days (N >= 1; default: all time)
+  --codex-home PATH Override CODEX_HOME for this invocation (default: CODEX_HOME or ~/.codex)
+  --ctx-data-root PATH Read a specific ctx data root (default: ctx default)
+  --color MODE      auto, always, or never (default: auto; human report only)
+  --group-by UNIT   turn or session (default: turn)
   --verbose         Show input diagnostic details
   --strict-input    Exit non-zero when input records are skipped
   --json            Emit JSON
@@ -60,11 +60,11 @@ Show tool usage by canonical name.
 
 Options:
   --source SOURCE   codex or ctx (default: codex)
-  --days N          Include the last N days (N >= 1)
-  --codex-home PATH Override CODEX_HOME for this invocation
-  --ctx-data-root PATH Read a specific ctx data root
-  --color MODE      auto, always, or never (human report only)
-  --layer LAYER     effective, runtime, or model
+  --days N          Include the last N days (N >= 1; default: all time)
+  --codex-home PATH Override CODEX_HOME for this invocation (default: CODEX_HOME or ~/.codex)
+  --ctx-data-root PATH Read a specific ctx data root (default: ctx default)
+  --color MODE      auto, always, or never (default: auto; human report only)
+  --layer LAYER     effective, runtime, or model (default: effective)
   --verbose         Show input diagnostic details
   --strict-input    Exit non-zero when input records are skipped
   --json            Emit JSON
@@ -77,15 +77,15 @@ Show skill usage and evidence state.
 
 Options:
   --source SOURCE   codex or ctx (default: codex)
-  --days N          Include the last N days (N >= 1)
-  --codex-home PATH Override CODEX_HOME for this invocation
-  --ctx-data-root PATH Read a specific ctx data root
-  --color MODE      auto, always, or never (human report only)
-  --group-by UNIT   turn or session
+  --days N          Include the last N days (N >= 1; default: all time)
+  --codex-home PATH Override CODEX_HOME for this invocation (default: CODEX_HOME or ~/.codex)
+  --ctx-data-root PATH Read a specific ctx data root (default: ctx default)
+  --color MODE      auto, always, or never (default: auto; human report only)
+  --group-by UNIT   turn or session (default: turn; no effect on --unused)
   --strict          Count confirmed skill evidence only
-  --view VIEW       auto, compact, mode, state, or all (human report only)
+  --view VIEW       auto, compact, mode, state, or all (default: auto; human report only)
   --unused          Show installed skills with no recorded usage
-  --root PATH       Scan a skill root (repeatable; only with --unused)
+  --root PATH       Scan a skill root (repeatable; only with --unused; default if omitted: ~/.agents/skills)
   --verbose         Show input diagnostic details
   --strict-input    Exit non-zero when input records are skipped
   --json            Emit JSON

@@ -281,8 +281,8 @@ func TestSkillUsageViewsShowEffectiveView(t *testing.T) {
 			view:   SkillUsageViewState,
 			width:  80,
 			report: sampleReport(),
-			want:   []string{"View: state", "Confirmed", "Inferred", "Unconfirmed", "Total", "Last Used"},
-			omit:   []string{"Explicit", "Implicit", "Unknown"},
+			want:   []string{"View: state", "Confirmed", "Inferred", "Unconfirmed", "Total"},
+			omit:   []string{"Explicit", "Implicit", "Unknown", "Last Used"},
 		},
 		{
 			name:   "explicit all",
@@ -578,7 +578,7 @@ func TestUnusedSkillHumanReportShowsScopeIdentityAndCounts(t *testing.T) {
 		InstalledSkills: 2,
 	}
 	got := RenderHuman("skills", ctx, report, TerminalCapabilities{Width: 120, ColorMode: ColorNever})
-	for _, want := range []string{"UNUSED SKILLS", "Period: last 30 days", "Strict: true", "Roots: /workspace/.agents/skills", "canonical-name", "/workspace/.agents/skills/directory-name", "1 unused skill, 2 installed skills total"} {
+	for _, want := range []string{"UNUSED SKILLS", "Period: last 30 days", "Group by: turn", "Strict: true", "View: unused", "Roots: /workspace/.agents/skills", "canonical-name", "/workspace/.agents/skills/directory-name", "1 unused skill, 2 installed skills total", "──"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("unused report does not contain %q:\n%s", want, got)
 		}
@@ -591,6 +591,26 @@ func TestUnusedSkillHumanReportShowsScopeIdentityAndCounts(t *testing.T) {
 	}
 	if strings.Contains(got, "Directory") {
 		t.Fatalf("unused report contains redundant Directory column: %s", got)
+	}
+}
+
+func TestUnusedSkillHumanReportUsesSharedTableStyles(t *testing.T) {
+	ctx := ReportContext{Agent: "codex", SkillView: SkillViewUnused, SkillRoots: []string{"/skills"}}
+	report := aggregate.Report{UnusedSkills: []skillinventory.InventoryEntry{{
+		Name:         "canonical-name",
+		Path:         "/skills/directory-name",
+		NameSource:   skillinventory.NameSourceFrontmatter,
+		NameMismatch: true,
+	}}}
+	got := RenderHuman("skills", ctx, report, TerminalCapabilities{Width: 120, ColorMode: ColorAlways})
+	for _, want := range []string{
+		"\x1b[1;93mSkill\x1b[m",
+		"\x1b[2m────────────────",
+		"\x1b[96mcanonical-name*\x1b[m",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("unused report does not use shared table style %q:\n%s", want, got)
+		}
 	}
 }
 

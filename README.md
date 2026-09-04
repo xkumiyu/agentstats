@@ -6,7 +6,7 @@ agentstats is a command-line tool for inspecting Codex usage. It aggregates loca
 
 > [!NOTE]
 > agentstats supports:
-> - Codex history
+> - Codex
 > - [ctx](https://github.com/ctxrs/ctx)
 
 ## Quick start
@@ -41,38 +41,27 @@ agentstats skills  # Usage by skill
 
 Use `--json` when machine-readable output is needed.
 
-## Choosing a history source
+### Choosing a history source
 
 Codex is the default. Each invocation reads one source only; history from
 Codex and ctx is never combined. Use `--source ctx` for ctx history.
 
-## Example output: `agentstats tools`
+## Example output
+
+`agentstats tools`:
 
 ```text
 TOOL USAGE
-Source: ctx (/path/to/ctx-data)
-Agents: Codex, OpenCode
+Source: Codex (~/.codex)
+Agents: Codex
 Period: all time
 Layer: effective
 
 Tool       Calls  Failures  Last Used
 ────────────────────────────────────────────────────
-shell          42         0  2026-09-03 14:20 JST
+shell          42         0  2026-09-01 12:34 JST
 
 1 tool, 42 calls total
-```
-
-The JSON form adds `source` and the canonical `agents` array. The legacy
-`agent` string remains available: it is `codex` for the default Codex source,
-the single canonical agent ID for one ctx agent, and a deterministic
-comma-separated list for multiple ctx agents.
-
-```json
-{
-  "source": "ctx",
-  "agents": ["codex", "opencode"],
-  "agent": "codex,opencode"
-}
 ```
 
 ## Understanding skill usage
@@ -104,8 +93,8 @@ agentstats skills --view all
 The default `--view auto` selects `compact`, `mode`, or `all` from the
 terminal width and reports it as `View: auto (selected: mode)` in the context
 lines. `mode` shows activation evidence, `state` shows evidence state and
-`Last Used`, and explicit `all` shows the two tables separately so they remain
-readable on ordinary terminals.
+explicit `all` shows the two tables separately, including `Last Used`, so they
+remain readable on ordinary terminals.
 
 ## Finding unused skills
 

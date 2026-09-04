@@ -5,7 +5,9 @@ agentstatsは、Codexの利用状況を確認するコマンドラインツー�
 [English version](README.md)
 
 > [!NOTE]
-> agentstatsは、Codexの履歴とctxが提供する読み取り専用イベントストリームに対応しています。
+> agentstatsは次に対応しています。
+> - Codex
+> - [ctx](https://github.com/ctxrs/ctx)
 
 ## クイックスタート
 
@@ -39,37 +41,27 @@ agentstats skills  # Skillごとの利用状況
 
 機械可読な出力が必要な場合は`--json`を指定します。
 
-## 履歴ソースの選択
+### 履歴ソースの選択
 
 デフォルトはCodexです。1回の実行で選択できるsourceは1つだけで、Codexとctxの
 履歴は合算しません。ctxの履歴を使う場合は`--source ctx`を指定します。
 
-## 出力例: `agentstats tools`
+## 出力例
+
+`agentstats tools`:
 
 ```text
 TOOL USAGE
-Source: ctx (/path/to/ctx-data)
-Agents: Codex, OpenCode
+Source: Codex (~/.codex)
+Agents: Codex
 Period: all time
 Layer: effective
 
 Tool       Calls  Failures  Last Used
 ────────────────────────────────────────────────────
-shell          42         0  2026-09-03 14:20 JST
+shell          42         0  2026-09-01 12:34 JST
 
 1 tool, 42 calls total
-```
-
-JSON出力には`source`とcanonicalな`agents`配列が追加されます。後方互換の
-`agent`文字列も残ります。デフォルトのCodexソースでは`codex`、ctxの単一Agentでは
-そのcanonical Agent ID、複数Agentでは決定的順序のcomma区切り値になります。
-
-```json
-{
-  "source": "ctx",
-  "agents": ["codex", "opencode"],
-  "agent": "codex,opencode"
-}
 ```
 
 ## Skill集計の見方
@@ -100,7 +92,7 @@ agentstats skills --view all
 
 デフォルトの`--view auto`は端末幅に応じて`compact`、`mode`、`all`を選び、
 context行に`View: auto (selected: mode)`のような形式で実際に選ばれたviewを表示します。`mode`はactivation evidence、
-`state`はevidence stateと`Last Used`、明示した`all`は両方の表を分けて表示します。
+`state`はevidence state、明示した`all`は`Last Used`を含む両方の表を分けて表示します。
 
 ## 未使用Skillの確認
 

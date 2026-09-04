@@ -425,6 +425,54 @@ func TestRunHelpIsScopedToCommand(t *testing.T) {
 	}
 }
 
+func TestRunHelpDocumentsDefaults(t *testing.T) {
+	tests := []struct {
+		command string
+		want    []string
+	}{
+		{
+			command: "stats",
+			want: []string{
+				"--days N          Include the last N days (N >= 1; default: all time)",
+				"--color MODE      auto, always, or never (default: auto; human report only)",
+				"--group-by UNIT   turn or session (default: turn)",
+			},
+		},
+		{
+			command: "tools",
+			want: []string{
+				"--days N          Include the last N days (N >= 1; default: all time)",
+				"--color MODE      auto, always, or never (default: auto; human report only)",
+				"--layer LAYER     effective, runtime, or model (default: effective)",
+			},
+		},
+		{
+			command: "skills",
+			want: []string{
+				"--days N          Include the last N days (N >= 1; default: all time)",
+				"--color MODE      auto, always, or never (default: auto; human report only)",
+				"--group-by UNIT   turn or session (default: turn; no effect on --unused)",
+				"--view VIEW       auto, compact, mode, state, or all (default: auto; human report only)",
+				"--root PATH       Scan a skill root (repeatable; only with --unused; default if omitted: ~/.agents/skills)",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.command, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := run([]string{tt.command, "--help"}, &stdout, &stderr); code != 0 {
+				t.Fatalf("help exit=%d stderr=%s", code, stderr.String())
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(stdout.String(), want) {
+					t.Errorf("help missing %q:\n%s", want, stdout.String())
+				}
+			}
+		})
+	}
+}
+
 func helpContainsOption(text, option string) bool {
 	for _, line := range strings.Split(text, "\n") {
 		fields := strings.Fields(line)
@@ -780,10 +828,13 @@ func TestRunSkillsViewOptionAndAutoContext(t *testing.T) {
 	if code := run([]string{"skills", "--codex-home", home, "--view", "state", "--color", "never"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("state view exit=%d stderr=%s", code, stderr.String())
 	}
-	for _, want := range []string{"View: state", "Confirmed", "Inferred", "Unconfirmed", "Last Used"} {
+	for _, want := range []string{"View: state", "Confirmed", "Inferred", "Unconfirmed"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("state view missing %q:\n%s", want, stdout.String())
 		}
+	}
+	if strings.Contains(stdout.String(), "Last Used") {
+		t.Fatalf("state view contains Last Used:\n%s", stdout.String())
 	}
 
 	stdout.Reset()
