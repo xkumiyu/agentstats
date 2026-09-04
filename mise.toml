@@ -31,6 +31,19 @@ run = "golangci-lint run"
 description = "Run go vet"
 run = "go vet ./..."
 
+[tasks.npm-test]
+description = "Run npm wrapper tests"
+run = "npm test --prefix npm"
+
+[tasks.npm-pack-check]
+description = "Validate npm package contents"
+run = "npm pack ./npm --dry-run --ignore-scripts"
+
+[tasks.release-check]
+description = "Check GoReleaser configuration"
+tools.goreleaser = "2"
+run = "goreleaser check"
+
 [tasks.check]
-description = "Run all CI checks"
-depends = ["fmt-check", "lint", "vet", "test", "build"]
+description = "Run local project checks"
+depends = ["fmt-check", "lint", "vet", "test", "npm-test", "npm-pack-check", "build"]
