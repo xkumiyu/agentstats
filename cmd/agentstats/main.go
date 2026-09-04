@@ -259,8 +259,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	now := time.Now().UTC()
+	progress := newSpinner(stderr, !*jsonOutput && diagnostics.capabilities.IsTTY, diagnostics.capabilities.ColorsEnabled())
+	stopProgress := progress.Start("Reading Codex history")
 	input, err := codex.Load(home, codex.IngestOptions{Days: *days, DaysSet: daysSet, Now: now})
 	if err != nil {
+		stopProgress()
 		diagnostics.errorf("read Codex history %q: %v", home, err)
 		return 1
 	}
@@ -269,13 +272,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 	warnings := input.Warnings
 	var inventorySnapshot skillinventory.InventorySnapshot
 	if *unused {
+		stopProgress = startProgressPhase(stopProgress, progress.Start, "Scanning installed skills")
 		userHome, err := os.UserHomeDir()
 		if err != nil {
+			stopProgress()
 			_, _ = fmt.Fprintf(stderr, "error: resolve user home for skill inventory: %v\n", err)
 			return 1
 		}
 		resolvedRoots, err := skillinventory.ResolveRoots([]string(roots), userHome)
 		if err != nil {
+			stopProgress()
 			_, _ = fmt.Fprintf(stderr, "error: resolve skill roots: %v\n", err)
 			return 1
 		}
@@ -284,11 +290,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 			AllowMissingRoots: len(roots) == 0,
 		})
 		if err != nil {
+			stopProgress()
 			_, _ = fmt.Fprintf(stderr, "error: scan skill roots: %v\n", err)
 			return 1
 		}
 		report = aggregate.BuildUnusedReport(aggregateInput, inventorySnapshot, *strict, selectedGroupBy)
 		warnings = report.Warnings
+		stopProgress()
 	} else {
 		report = aggregate.BuildOverviewBy(aggregateInput, selectedGroupBy)
 		if kind == "tools" {
@@ -297,6 +305,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if kind == "skills" {
 			report.Skills = aggregate.SkillsBy(aggregateInput, *strict, selectedGroupBy)
 		}
+		stopProgress()
 	}
 	period := "all time"
 	if daysSet {
