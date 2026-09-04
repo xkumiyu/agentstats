@@ -33,7 +33,6 @@
   },
   "scripts": {
     "test": "node --test",
-    "prepublishOnly": "npm test",
-    "postinstall": "node scripts/install.js"
+    "prepublishOnly": "npm test"
   }
 }

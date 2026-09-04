@@ -46,4 +46,12 @@ run = "goreleaser check"
 
 [tasks.check]
 description = "Run local project checks"
-depends = ["fmt-check", "lint", "vet", "test", "npm-test", "npm-pack-check", "build"]
+depends = [
+  "fmt-check",
+  "lint",
+  "vet",
+  "test",
+  "npm-test",
+  "npm-pack-check",
+  "build",
+]

@@ -45,5 +45,8 @@ jobs:
         working-directory: npm
         run: npm pkg set version="${GITHUB_REF_NAME#v}"
 
+      - name: Stage native binaries for npm package
+        run: node .github/scripts/stage-npm-binaries.js "${GITHUB_REF_NAME#v}"
+
       - name: Publish npm package
         run: npm publish ./npm --access public
