@@ -2,6 +2,7 @@
   "name": "@xkumiyu/agentstats",
   "version": "0.0.0",
   "description": "CLI for inspecting Codex usage",
+  "license": "MIT",
   "bin": {
     "agentstats": "bin/agentstats.js"
   },
