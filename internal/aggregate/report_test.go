@@ -50,6 +50,38 @@ func TestAggregateSortsByCountThenName(t *testing.T) {
 	}
 }
 
+func TestAggregateCombinesCanonicalNamesAcrossAgents(t *testing.T) {
+	stamp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	turns := []usage.Turn{
+		{
+			SessionID:    "ctx\x00codex\x00shared",
+			Source:       usage.SourceRef{Source: usage.SourceCtx, Agent: "codex"},
+			RuntimeTools: []usage.ToolObservation{{CanonicalName: "shell", Status: usage.StatusSuccess, Timestamp: stamp}},
+			SkillEvidence: []usage.SkillEvidence{
+				usage.NewSkillEvidence("ctx\x00codex\x00shared", "t1", "review", usage.ModeExplicit, usage.MethodStructuredTool, usage.StateConfirmed, stamp, usage.SourceRef{Source: usage.SourceCtx, Agent: "codex"}),
+			},
+		},
+		{
+			SessionID:    "ctx\x00opencode\x00shared",
+			Source:       usage.SourceRef{Source: usage.SourceCtx, Agent: "opencode"},
+			RuntimeTools: []usage.ToolObservation{{CanonicalName: "shell", Status: usage.StatusFailure, Timestamp: stamp.Add(time.Second)}},
+			SkillEvidence: []usage.SkillEvidence{
+				usage.NewSkillEvidence("ctx\x00opencode\x00shared", "t1", "review", usage.ModeExplicit, usage.MethodStructuredTool, usage.StateConfirmed, stamp.Add(time.Second), usage.SourceRef{Source: usage.SourceCtx, Agent: "opencode"}),
+			},
+		},
+	}
+	report := BuildOverview(Input{Turns: turns})
+	if report.Overview.Sessions != 2 || report.Overview.ToolCalls != 2 || report.Overview.SkillUses != 2 {
+		t.Fatalf("overview = %#v", report.Overview)
+	}
+	if len(report.Tools) != 1 || report.Tools[0].Name != "shell" || report.Tools[0].Calls != 2 || report.Tools[0].Failures != 1 {
+		t.Fatalf("tools = %#v", report.Tools)
+	}
+	if len(report.Skills) != 1 || report.Skills[0].Name != "review" || report.Skills[0].Total != 2 {
+		t.Fatalf("skills = %#v", report.Skills)
+	}
+}
+
 func TestSkillsPreserveOverlappingModesAndUnknownActivation(t *testing.T) {
 	stamp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	turns := []usage.Turn{

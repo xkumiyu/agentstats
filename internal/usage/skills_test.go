@@ -152,6 +152,7 @@ func TestImplicitAccessParsesReadersShellWrappersAndScripts(t *testing.T) {
 	commands := []string{
 		"cat '" + path + "'",
 		"rtk proxy cat " + path,
+		"rtk run -c 'cat " + path + "'",
 		`["/bin/zsh","-lc","sed -n '1,20p' ` + path + `"]`,
 		"python3 /fixture-home/.agents/skills/report/scripts/render.py",
 	}
@@ -204,6 +205,17 @@ func TestMergeSkillEvidence(t *testing.T) {
 	}
 	if !merged.HasMode(ModeExplicit) || !merged.HasMode(ModeImplicit) || len(merged.Modes) != 2 {
 		t.Fatalf("merged modes = %#v", merged)
+	}
+}
+
+func TestMergeSkillEvidenceKeepsAgentsSeparate(t *testing.T) {
+	stamp := time.Unix(1, 0)
+	evidence := []SkillEvidence{
+		NewSkillEvidence("shared-session", "turn", "review", ModeExplicit, MethodStructuredTool, StateConfirmed, stamp, SourceRef{Source: SourceCtx, Agent: "codex"}),
+		NewSkillEvidence("shared-session", "turn", "review", ModeExplicit, MethodStructuredTool, StateConfirmed, stamp, SourceRef{Source: SourceCtx, Agent: "opencode"}),
+	}
+	if got := MergeSkillEvidence(evidence); len(got) != 2 {
+		t.Fatalf("merged evidence = %#v", got)
 	}
 }
 

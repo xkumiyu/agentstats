@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -91,6 +92,9 @@ func (c TerminalCapabilities) ColorsEnabled() bool {
 }
 
 type ReportContext struct {
+	Source         usage.SourceKind
+	SourcePath     string
+	Agents         []string
 	Agent          string
 	Period         string
 	Layer          usage.ToolLayer
@@ -103,19 +107,87 @@ type ReportContext struct {
 	Location       *time.Location
 }
 
-func (c ReportContext) agent() string {
-	value := strings.TrimSpace(c.Agent)
-	if value == "" || strings.EqualFold(value, "codex") {
-		return "Codex"
+func (c ReportContext) sourceKind() usage.SourceKind {
+	if c.Source.Valid() {
+		return c.Source
 	}
-	return value
+	return usage.SourceCodex
+}
+
+func (c ReportContext) sourceContext() string {
+	label := string(c.sourceKind())
+	if c.sourceKind() == usage.SourceCodex {
+		label = "Codex"
+	}
+	path := strings.TrimSpace(c.SourcePath)
+	if path == "" && c.sourceKind() == usage.SourceCodex {
+		path = "~/.codex"
+	}
+	if path == "" {
+		return label
+	}
+	return label + " (" + displaySourcePath(path) + ")"
+}
+
+func displaySourcePath(path string) string {
+	path = safeDisplay(path)
+	if path == "" || strings.HasPrefix(path, "~") || !filepath.IsAbs(path) {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || !filepath.IsAbs(home) {
+		return path
+	}
+	relative, err := filepath.Rel(home, path)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return path
+	}
+	if relative == "." {
+		return "~"
+	}
+	return "~" + string(filepath.Separator) + relative
+}
+
+func (c ReportContext) agentIDs() []string {
+	values := c.Agents
+	if len(values) == 0 && strings.TrimSpace(c.Agent) != "" {
+		values = strings.Split(c.Agent, ",")
+	}
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		id := usage.CanonicalAgentID(value)
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		result = append(result, id)
+	}
+	if len(result) == 0 && c.sourceKind() == usage.SourceCodex {
+		return []string{"codex"}
+	}
+	sort.Strings(result)
+	return result
+}
+
+func (c ReportContext) agent() string {
+	agents := c.agentIDs()
+	names := make([]string, 0, len(agents))
+	for _, agent := range agents {
+		names = append(names, usage.AgentDisplayName(agent))
+	}
+	if len(names) == 0 {
+		return "-"
+	}
+	return strings.Join(names, ", ")
 }
 
 func (c ReportContext) agentID() string {
-	if strings.TrimSpace(c.Agent) == "" {
-		return "codex"
+	agents := c.agentIDs()
+	if len(agents) == 0 {
+		return ""
 	}
-	return strings.ToLower(strings.TrimSpace(c.Agent))
+	return strings.Join(agents, ",")
 }
 
 func (c ReportContext) period() string {
@@ -180,7 +252,7 @@ func reportHeading(kind string, ctx ReportContext) string {
 }
 
 func contextLines(kind string, ctx ReportContext, effectiveSkillUsageView SkillUsageView, styled bool) []string {
-	parts := []string{"Agent: " + ctx.agent(), "Period: " + ctx.period()}
+	parts := []string{"Source: " + ctx.sourceContext(), "Agents: " + ctx.agent(), "Period: " + ctx.period()}
 	switch kind {
 	case "tools":
 		layer := ctx.Layer
@@ -777,23 +849,27 @@ func totalSkillUses(rows []aggregate.SkillRow) int {
 // RenderJSON returns one stable JSON document per command.
 func RenderJSON(kind string, ctx ReportContext, report aggregate.Report) ([]byte, error) {
 	base := struct {
-		SchemaVersion int    `json:"schema_version"`
-		Agent         string `json:"agent"`
-		Period        string `json:"period"`
-	}{1, ctx.agentID(), ctx.period()}
+		SchemaVersion int      `json:"schema_version"`
+		Agent         string   `json:"agent"`
+		Source        string   `json:"source"`
+		Agents        []string `json:"agents"`
+		Period        string   `json:"period"`
+	}{1, ctx.agentID(), string(ctx.sourceKind()), ctx.agentIDs(), ctx.period()}
 	switch kind {
 	case "stats":
 		value := struct {
-			SchemaVersion int    `json:"schema_version"`
-			Agent         string `json:"agent"`
-			Period        string `json:"period"`
-			GeneratedAt   string `json:"generated_at"`
-			Sessions      int    `json:"sessions"`
-			UserPrompts   int    `json:"user_prompts"`
-			ToolCalls     int    `json:"tool_calls"`
-			SkillUses     int    `json:"skill_uses"`
-			GroupBy       string `json:"group_by"`
-		}{base.SchemaVersion, base.Agent, base.Period, formatMachineTime(ctx.ReferenceTime), report.Overview.Sessions, report.Overview.UserPrompts, report.Overview.ToolCalls, report.Overview.SkillUses, string(contextSkillGroupBy(ctx))}
+			SchemaVersion int      `json:"schema_version"`
+			Agent         string   `json:"agent"`
+			Source        string   `json:"source"`
+			Agents        []string `json:"agents"`
+			Period        string   `json:"period"`
+			GeneratedAt   string   `json:"generated_at"`
+			Sessions      int      `json:"sessions"`
+			UserPrompts   int      `json:"user_prompts"`
+			ToolCalls     int      `json:"tool_calls"`
+			SkillUses     int      `json:"skill_uses"`
+			GroupBy       string   `json:"group_by"`
+		}{base.SchemaVersion, base.Agent, base.Source, base.Agents, base.Period, formatMachineTime(ctx.ReferenceTime), report.Overview.Sessions, report.Overview.UserPrompts, report.Overview.ToolCalls, report.Overview.SkillUses, string(contextSkillGroupBy(ctx))}
 		return json.MarshalIndent(value, "", "  ")
 	case "tools":
 		rows := make([]toolJSON, 0, len(report.Tools))
@@ -803,11 +879,13 @@ func RenderJSON(kind string, ctx ReportContext, report aggregate.Report) ([]byte
 		value := struct {
 			SchemaVersion int        `json:"schema_version"`
 			Agent         string     `json:"agent"`
+			Source        string     `json:"source"`
+			Agents        []string   `json:"agents"`
 			Period        string     `json:"period"`
 			GeneratedAt   string     `json:"generated_at"`
 			Layer         string     `json:"layer"`
 			Rows          []toolJSON `json:"rows"`
-		}{base.SchemaVersion, base.Agent, base.Period, formatMachineTime(ctx.ReferenceTime), string(contextLayer(ctx)), rows}
+		}{base.SchemaVersion, base.Agent, base.Source, base.Agents, base.Period, formatMachineTime(ctx.ReferenceTime), string(contextLayer(ctx)), rows}
 		return json.MarshalIndent(value, "", "  ")
 	case "skills":
 		if ctx.SkillView == SkillViewUnused {
@@ -819,6 +897,8 @@ func RenderJSON(kind string, ctx ReportContext, report aggregate.Report) ([]byte
 			value := struct {
 				SchemaVersion  int               `json:"schema_version"`
 				Agent          string            `json:"agent"`
+				Source         string            `json:"source"`
+				Agents         []string          `json:"agents"`
 				Period         string            `json:"period"`
 				GeneratedAt    string            `json:"generated_at"`
 				Strict         bool              `json:"strict"`
@@ -828,7 +908,7 @@ func RenderJSON(kind string, ctx ReportContext, report aggregate.Report) ([]byte
 				InstalledCount int               `json:"installed_count"`
 				UnusedCount    int               `json:"unused_count"`
 				Rows           []unusedSkillJSON `json:"rows"`
-			}{base.SchemaVersion, base.Agent, base.Period, formatMachineTime(ctx.ReferenceTime), ctx.Strict, string(contextSkillGroupBy(ctx)), string(SkillViewUnused), roots, report.InstalledSkills, len(rows), rows}
+			}{base.SchemaVersion, base.Agent, base.Source, base.Agents, base.Period, formatMachineTime(ctx.ReferenceTime), ctx.Strict, string(contextSkillGroupBy(ctx)), string(SkillViewUnused), roots, report.InstalledSkills, len(rows), rows}
 			return json.MarshalIndent(value, "", "  ")
 		}
 		rows := make([]skillJSON, 0, len(report.Skills))
@@ -838,12 +918,14 @@ func RenderJSON(kind string, ctx ReportContext, report aggregate.Report) ([]byte
 		value := struct {
 			SchemaVersion int         `json:"schema_version"`
 			Agent         string      `json:"agent"`
+			Source        string      `json:"source"`
+			Agents        []string    `json:"agents"`
 			Period        string      `json:"period"`
 			GeneratedAt   string      `json:"generated_at"`
 			Strict        bool        `json:"strict"`
 			GroupBy       string      `json:"group_by"`
 			Rows          []skillJSON `json:"rows"`
-		}{base.SchemaVersion, base.Agent, base.Period, formatMachineTime(ctx.ReferenceTime), ctx.Strict, string(contextSkillGroupBy(ctx)), rows}
+		}{base.SchemaVersion, base.Agent, base.Source, base.Agents, base.Period, formatMachineTime(ctx.ReferenceTime), ctx.Strict, string(contextSkillGroupBy(ctx)), rows}
 		return json.MarshalIndent(value, "", "  ")
 	default:
 		return nil, fmt.Errorf("unknown report kind %q", kind)

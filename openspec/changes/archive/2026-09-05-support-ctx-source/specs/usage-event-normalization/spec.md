@@ -1,15 +1,11 @@
-# usage-event-normalization Specification
-
-## Purpose
-
-Codex固有の履歴recordを、二重計上を避けながらsession・prompt・Tool・Skillの意味が明確で検出根拠を追跡できる共通利用Eventへ変換する。
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: sessionとuser promptを識別する
+
 システムはhistory source、Agent identity、およびprovider session identityの組み合わせごとに1つのsessionを数えなければならない（SHALL）。同じprovider session IDの文字列が異なるAgentまたはsourceに存在しても、別sessionとして扱わなければならない（MUST NOT）。user promptは実際のuser入力だけを数え、developer・system message、Skill本文の注入、tool outputをuser promptとして数えてはならない（MUST NOT）。
 
 #### Scenario: 同一sessionに複数recordがある
+
 - **WHEN** 同じsource、Agent、session identityに属する複数の履歴recordを処理する
 - **THEN** session数は1となり、実際のuser入力だけがuser prompt数へ加算される
 
@@ -19,25 +15,31 @@ Codex固有の履歴recordを、二重計上を避けながらsession・prompt�
 - **THEN** システムは2つのsessionとして扱い、session数を誤って1へ統合しない
 
 #### Scenario: 注入されたSkill本文がuser roleで保存される
+
 - **WHEN** contextual inputとして `<skill>` blockを含むuser role messageが保存されている
 - **THEN** システムはそのmessageをSkill検出の証拠として扱い、user prompt数には加算しない
 
 ### Requirement: Tool観測layerを区別する
+
 システムはCodex raw recordまたはctx normalized eventから取得できるTool callと実行結果を、modelまたはruntime layerのTool観測として扱わなければならない（SHALL）。model/runtimeの区別、raw name、canonical name、callまたはitem ID、完了status、およびsource位置を取得できる範囲で保持しなければならない（SHALL）。layerを確定できないctx eventは、推測でmodelとruntimeを二重計上せず、定義されたfallbackまたはwarningの対象としなければならない（MUST NOT）。
 
 #### Scenario: modelがcode-mode execを選択する
+
 - **WHEN** `custom_tool_call` またはctxのmodel Tool eventのnameが `exec` である
 - **THEN** システムはcanonical name `exec`、layer `model` のTool観測を生成する
 
 #### Scenario: command実行が完了する
+
 - **WHEN** `ItemCompleted` またはctxのcommand completion eventがcommand executionを含む
 - **THEN** システムはcanonical name `shell`、layer `runtime` のTool観測を生成する
 
 #### Scenario: MCP Toolが完了する
+
 - **WHEN** `ItemCompleted` またはctx normalized activityがMcpToolCallを含む
 - **THEN** システムはMCP server名とTool名を失わないcanonical name、layer `runtime` のTool観測を生成する
 
 #### Scenario: その他の既知runtime actionが完了する
+
 - **WHEN** Itemまたはctx eventがFile変更、Web検索、image閲覧、image生成、またはcollaboration actionを含む
 - **THEN** システムはaction種別を表す安定したcanonical nameとlayer `runtime` のTool観測を生成する
 
@@ -46,52 +48,46 @@ Codex固有の履歴recordを、二重計上を避けながらsession・prompt�
 - **WHEN** ctx eventがTool名を含むがmodel/runtimeを区別できる情報を含まない
 - **THEN** システムは外側のmodel wrapperとruntime actionを同一利用として二重計上せず、定義されたfallbackまたはwarningを適用する
 
-### Requirement: effective Tool利用を二重計上しない
-システムは通常のTool統計用に `effective` viewを生成しなければならない（SHALL）。同一turnにruntime観測がある場合はruntime観測を採用し、それを包むmodel layerの `exec` を加算してはならない（MUST NOT）。runtime観測が存在しない旧形式のturnではmodel観測をfallbackとして採用しなければならない（SHALL）。失敗して完了したToolも1回の利用として数えなければならない（SHALL）。
-
-#### Scenario: execが2つのruntime actionを実行する
-- **WHEN** 1つのmodel `exec` に対応するturnで2つのruntime actionが完了する
-- **THEN** effective Tool利用はruntime action 2回となり、外側の `exec` は追加の1回として数えられない
-
-#### Scenario: runtime eventのない旧履歴を読む
-- **WHEN** turnにmodel Tool callはあるが対応するruntime観測がない
-- **THEN** effective viewはmodel Tool callをfallbackとして数える
-
-#### Scenario: Toolがerrorで完了する
-- **WHEN** runtime Toolの完了statusが失敗である
-- **THEN** effective viewはCallsを1増やし、Failuresも1増やす
-
 ### Requirement: Skill利用を証拠種別とともに検出する
+
 システムはCodex raw recordまたはctx normalized eventで取得できる証拠を対象に、Skill専用recordの存在だけを前提としてはならない（MUST NOT）。注入されたstructured `<skill>` blockを `explicit-injected`、structured Skill toolまたは同等のctx activityを `structured-tool`、canonicalな先頭 `$skill-name` user入力を `explicit-request`、既知Skillの `SKILL.md` または `scripts` 配下への実行時accessを `implicit-access` として識別しなければならない（SHALL）。各Skill観測はSkill名、利用mode、検出方式、確認状態、timestamp、session、turn、およびsource位置を取得できる範囲で保持しなければならない（SHALL）。ctxが根拠を保持していない通常文からSkill利用を推測してはならない（MUST NOT）。
 
 #### Scenario: Skillがcontextへ正常に注入される
+
 - **WHEN** contextual user inputに有効な `<skill>` blockとSkill名が含まれる
 - **THEN** システムはmode `explicit`、method `explicit-injected`、state `confirmed` のSkill観測を生成する
 
 #### Scenario: structured Skill toolが実行される
+
 - **WHEN** native `Skill` tool、namespaced `skills.read`、またはctx eventのstructured activityが特定Skillを対象とするSkill tool executionを示す
 - **THEN** システムはmethod `structured-tool`、state `confirmed` のSkill観測を生成する
 
 #### Scenario: userがcanonical markerを入力する
+
 - **WHEN** 実際のuser入力が先頭の `$skill-name` で始まり、対応する注入またはstructured Toolの証拠がない
 - **THEN** システムはmethod `explicit-request`、state `unconfirmed` のSkill観測を生成する
 
 #### Scenario: Skill fileへ実行時accessする
+
 - **WHEN** runtime commandまたはctx activityが具体的な既知Skillの `SKILL.md` またはそのSkillの `scripts` 配下へのaccessを示す
 - **THEN** システムはmode `implicit`、method `implicit-access`、state `inferred` のSkill観測を生成する
 
 #### Scenario: prose内でSkillらしい文字列に言及する
+
 - **WHEN** userまたはassistantの通常文中に `$skill-name` や `SKILL.md` という文字列が現れるだけで、上記の構造または実行証拠を満たさない
 - **THEN** システムはSkill観測を生成しない
 
 ### Requirement: Skill利用をturn単位で重複排除する
+
 システムは同一history source、Agent、session、turn、およびSkillに属する複数の証拠を1回のSkill利用へ統合しなければならない（SHALL）。確認状態の優先順位は `confirmed`、`inferred`、`unconfirmed` とし、すべての検出方式は根拠一覧として保持しなければならない（SHALL）。同じSkillでも異なるAgent、turn、またはsessionで利用された場合は別の利用として数えなければならない（SHALL）。
 
 #### Scenario: requestと注入の両方が記録される
+
 - **WHEN** 同一source・Agent・turn・Skillに `explicit-request` と `explicit-injected` が存在する
 - **THEN** システムはstate `confirmed` の1回として数え、両方のmethodを根拠として保持する
 
 #### Scenario: 同一turnでSKILL.mdを複数回読む
+
 - **WHEN** 同じsource・Agent・session・turnで同一Skillの `SKILL.md` accessが複数回記録される
 - **THEN** システムは1回のSkill利用として数える
 
@@ -101,8 +97,11 @@ Codex固有の履歴recordを、二重計上を避けながらsession・prompt�
 - **THEN** システムはAgentごとの利用を別証拠として保持し、全体集計では2回の利用として扱える
 
 #### Scenario: 複数turnで同じSkillを利用する
-- **WHEN** 同一sessionの異なる2つのturnで同一Skillが検出される
+
+- **WHEN** 同一Agentの異なる2つのturnで同じSkillが検出される
 - **THEN** システムは2回のSkill利用として数える
+
+## ADDED Requirements
 
 ### Requirement: 正規化済みEventにsourceとAgent identityを保持する
 
@@ -117,14 +116,3 @@ Codex固有の履歴recordを、二重計上を避けながらsession・prompt�
 
 - **WHEN** 履歴eventにAgent identityがなく、sourceからも安全に解決できない
 - **THEN** システムはeventを `unknown` Agent scopeへ分類し、既知Agent名のrowへ合算せず、warningを記録する
-
-### Requirement: Skill名を安全に解決する
-システムはstructured evidence内のname、履歴に保存されたSkill metadata、`SKILL.md` frontmatterの `name`、Skill directory名の順でSkill名を解決しなければならない（SHALL）。現在のfilesystemにSkill fileが存在しなくても、履歴に十分なpathまたはmetadataがあれば過去の利用を破棄してはならない（MUST NOT）。
-
-#### Scenario: 使用後にSkillが削除されている
-- **WHEN** 履歴には `/skills/example/SKILL.md` へのaccessがあるが現在のfileは存在しない
-- **THEN** システムは利用可能な履歴metadataまたはdirectory名から `example` を解決する
-
-#### Scenario: frontmatter nameとdirectory名が異なる
-- **WHEN** 読取可能な `SKILL.md` のfrontmatter `name` がdirectory名と異なる
-- **THEN** システムはfrontmatterのnameをcanonical Skill名として使用する

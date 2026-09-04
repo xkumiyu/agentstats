@@ -1,12 +1,86 @@
 package usage
 
-import "time"
+import (
+	"strings"
+	"time"
+	"unicode"
+)
+
+// SourceKind identifies the history source selected for an invocation.
+type SourceKind string
+
+const (
+	SourceCodex SourceKind = "codex"
+	SourceCtx   SourceKind = "ctx"
+)
+
+func (s SourceKind) Valid() bool { return s == SourceCodex || s == SourceCtx }
+
+// CanonicalAgentID returns the stable, lower-case identifier used for
+// cross-agent identity and sorting. Provider names are intentionally kept
+// recognizable instead of being mapped to a closed list.
+func CanonicalAgentID(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return "unknown"
+	}
+	var result strings.Builder
+	separator := false
+	for _, r := range value {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			if separator && result.Len() > 0 {
+				result.WriteByte('-')
+			}
+			result.WriteRune(r)
+			separator = false
+		case r == '-' || r == '_' || unicode.IsSpace(r):
+			separator = result.Len() > 0
+		}
+	}
+	if result.Len() == 0 {
+		return "unknown"
+	}
+	return result.String()
+}
+
+// AgentDisplayName returns the stable human-facing name for a canonical ID.
+func AgentDisplayName(value string) string {
+	id := CanonicalAgentID(value)
+	switch id {
+	case "codex":
+		return "Codex"
+	case "opencode":
+		return "OpenCode"
+	case "claude-code":
+		return "Claude Code"
+	case "github-copilot":
+		return "GitHub Copilot"
+	case "unknown":
+		return "unknown"
+	}
+	parts := strings.Split(id, "-")
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		runes := []rune(part)
+		parts[i] = strings.ToUpper(string(runes[0])) + string(runes[1:])
+	}
+	return strings.Join(parts, " ")
+}
 
 // SourceRef identifies the immutable source position of an observation.
 type SourceRef struct {
-	Path       string `json:"path"`
-	Line       int    `json:"line"`
-	CLIVersion string `json:"cli_version,omitempty"`
+	Path              string     `json:"path"`
+	Line              int        `json:"line"`
+	CLIVersion        string     `json:"cli_version,omitempty"`
+	Source            SourceKind `json:"source,omitempty"`
+	Agent             string     `json:"agent,omitempty"`
+	Provider          string     `json:"provider,omitempty"`
+	ProviderSessionID string     `json:"provider_session_id,omitempty"`
+	CtxSessionID      string     `json:"ctx_session_id,omitempty"`
+	EventID           string     `json:"event_id,omitempty"`
 }
 
 // ToolLayer identifies where a tool observation was made.
@@ -131,6 +205,27 @@ type Result struct {
 
 func NewSourceRef(path string, line int, cliVersion string) SourceRef {
 	return SourceRef{Path: path, Line: line, CLIVersion: cliVersion}
+}
+
+func NewCodexSourceRef(path string, line int, cliVersion string) SourceRef {
+	source := NewSourceRef(path, line, cliVersion)
+	source.Source = SourceCodex
+	source.Agent = "codex"
+	source.Provider = "codex"
+	return source
+}
+
+func NewCtxSourceRef(path, provider, providerSessionID, ctxSessionID, eventID string) SourceRef {
+	agent := CanonicalAgentID(provider)
+	return SourceRef{
+		Path:              path,
+		Source:            SourceCtx,
+		Agent:             agent,
+		Provider:          strings.TrimSpace(provider),
+		ProviderSessionID: strings.TrimSpace(providerSessionID),
+		CtxSessionID:      strings.TrimSpace(ctxSessionID),
+		EventID:           strings.TrimSpace(eventID),
+	}
 }
 
 func NewTurn(sessionID, id string, ordinal int, source SourceRef) Turn {

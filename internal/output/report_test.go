@@ -2,6 +2,8 @@ package output
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -26,7 +28,7 @@ func sampleReport() aggregate.Report {
 func TestRenderHumanPlainReportIsReadable(t *testing.T) {
 	ctx := ReportContext{Agent: "codex", Period: "last 30 days", Layer: usage.LayerEffective, ReferenceTime: time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC), Location: time.FixedZone("JST", 9*60*60)}
 	got := RenderHuman("tools", ctx, sampleReport(), TerminalCapabilities{Width: 120, ColorMode: ColorNever})
-	for _, want := range []string{"TOOL USAGE", "Agent: Codex", "Period: last 30 days", "Layer: effective", "Tool", "shell", "56,789", "2026-01-02 12:04 JST", "1 tool, 56,789 calls total"} {
+	for _, want := range []string{"TOOL USAGE", "Source: Codex (~/.codex)", "Agents: Codex", "Period: last 30 days", "Layer: effective", "Tool", "shell", "56,789", "2026-01-02 12:04 JST", "1 tool, 56,789 calls total"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("report does not contain %q:\n%s", want, got)
 		}
@@ -41,6 +43,50 @@ func TestRenderHumanPlainReportIsReadable(t *testing.T) {
 	}
 }
 
+func TestRenderHumanDisplaysSourceAndSortedAgents(t *testing.T) {
+	ctx := ReportContext{Source: usage.SourceCtx, SourcePath: "/ctx/root", Agents: []string{"opencode", "codex"}, Period: "all time"}
+	got := RenderHuman("stats", ctx, aggregate.Report{}, TerminalCapabilities{Width: 120, ColorMode: ColorNever})
+	for _, want := range []string{"Source: ctx (/ctx/root)", "Agents: Codex, OpenCode", "Period: all time"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("report does not contain %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Agent: ") {
+		t.Fatalf("report uses singular agent context: %s", got)
+	}
+}
+
+func TestRenderHumanShortensCodexHomeToTilde(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := ReportContext{Source: usage.SourceCodex, SourcePath: filepath.Join(home, ".codex"), Agent: "codex", Period: "all time"}
+	got := RenderHuman("stats", ctx, aggregate.Report{}, TerminalCapabilities{Width: 120, ColorMode: ColorNever})
+	if !strings.Contains(got, "Source: Codex (~/.codex)") {
+		t.Fatalf("source path was not shortened: %s", got)
+	}
+}
+
+func TestRenderJSONAddsSourceAndAgentsButKeepsLegacyAgent(t *testing.T) {
+	ctx := ReportContext{Source: usage.SourceCtx, Agents: []string{"opencode", "codex"}, Agent: "codex,opencode", Period: "all time"}
+	data, err := RenderJSON("stats", ctx, aggregate.Report{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value struct {
+		Source string   `json:"source"`
+		Agents []string `json:"agents"`
+		Agent  string   `json:"agent"`
+	}
+	if err := json.Unmarshal(data, &value); err != nil {
+		t.Fatal(err)
+	}
+	if value.Source != "ctx" || !reflect.DeepEqual(value.Agents, []string{"codex", "opencode"}) || value.Agent != "codex,opencode" {
+		t.Fatalf("source metadata = %#v", value)
+	}
+}
+
 func TestRenderHumanUsesContentHeadingAndMultilineContext(t *testing.T) {
 	ctx := ReportContext{Agent: "codex", Period: "last 7 days", Layer: usage.LayerRuntime, SkillGroupBy: aggregate.SkillGroupBySession, Strict: true}
 
@@ -48,9 +94,9 @@ func TestRenderHumanUsesContentHeadingAndMultilineContext(t *testing.T) {
 		kind string
 		want []string
 	}{
-		{kind: "stats", want: []string{"USAGE OVERVIEW", "Agent: Codex", "Period: last 7 days", "Skill grouping: session"}},
-		{kind: "tools", want: []string{"TOOL USAGE", "Agent: Codex", "Period: last 7 days", "Layer: runtime"}},
-		{kind: "skills", want: []string{"SKILL USAGE", "Agent: Codex", "Period: last 7 days", "Group by: session", "Strict: true"}},
+		{kind: "stats", want: []string{"USAGE OVERVIEW", "Source: Codex (~/.codex)", "Agents: Codex", "Period: last 7 days", "Skill grouping: session"}},
+		{kind: "tools", want: []string{"TOOL USAGE", "Source: Codex (~/.codex)", "Agents: Codex", "Period: last 7 days", "Layer: runtime"}},
+		{kind: "skills", want: []string{"SKILL USAGE", "Source: Codex (~/.codex)", "Agents: Codex", "Period: last 7 days", "Group by: session", "Strict: true"}},
 	}
 
 	for _, tt := range tests {
@@ -111,9 +157,9 @@ func TestRenderHumanKeepsRequiredFieldsAtSupportedWidths(t *testing.T) {
 		kind     string
 		required []string
 	}{
-		{kind: "stats", required: []string{"USAGE OVERVIEW", "Agent: Codex", "Period: last 30 days", "Sessions"}},
-		{kind: "tools", required: []string{"TOOL USAGE", "Agent: Codex", "Period: last 30 days", "Tool", "Calls"}},
-		{kind: "skills", required: []string{"SKILL USAGE", "Agent: Codex", "Period: last 30 days", "Skill", "Total"}},
+		{kind: "stats", required: []string{"USAGE OVERVIEW", "Source: Codex (~/.codex)", "Agents: Codex", "Period: last 30 days", "Sessions"}},
+		{kind: "tools", required: []string{"TOOL USAGE", "Source: Codex (~/.codex)", "Agents: Codex", "Period: last 30 days", "Tool", "Calls"}},
+		{kind: "skills", required: []string{"SKILL USAGE", "Source: Codex (~/.codex)", "Agents: Codex", "Period: last 30 days", "Skill", "Total"}},
 	}
 
 	for _, tt := range tests {
@@ -139,7 +185,7 @@ func TestRenderHumanEmptyStateExplainsNoUsage(t *testing.T) {
 	ctx := ReportContext{Agent: "codex", Period: "last 1 day", Layer: usage.LayerEffective}
 
 	stats := RenderHuman("stats", ctx, aggregate.Report{}, TerminalCapabilities{Width: 80, ColorMode: ColorNever})
-	for _, want := range []string{"USAGE OVERVIEW", "Agent: Codex", "No usage found for the selected period."} {
+	for _, want := range []string{"USAGE OVERVIEW", "Source: Codex (~/.codex)", "Agents: Codex", "No usage found for the selected period."} {
 		if !strings.Contains(stats, want) {
 			t.Errorf("empty stats does not contain %q:\n%s", want, stats)
 		}

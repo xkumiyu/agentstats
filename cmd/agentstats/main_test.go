@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	ctxsource "github.com/xkumiyu/agentstats/internal/ctx"
 	"github.com/xkumiyu/agentstats/internal/usage"
 	appversion "github.com/xkumiyu/agentstats/internal/version"
 )
@@ -79,7 +80,7 @@ func TestRunCommandsAndMachineOutput(t *testing.T) {
 	if code := run([]string{"stats", "--codex-home", home, "--color", "never"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("stats exit=%d stderr=%s", code, stderr.String())
 	}
-	for _, want := range []string{"USAGE OVERVIEW", "Agent: Codex", "Sessions", "User Prompts", "Tool Calls", "Skill Uses"} {
+	for _, want := range []string{"USAGE OVERVIEW", "Source: Codex (" + home + ")", "Agents: Codex", "Sessions", "User Prompts", "Tool Calls", "Skill Uses"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("stats missing %q: %s", want, stdout.String())
 		}
@@ -188,6 +189,190 @@ func TestRunVersionFlag(t *testing.T) {
 	stderr.Reset()
 	if code := run([]string{"stats", "--version"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "use agentstats --version") {
 		t.Fatalf("subcommand version exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunValidatesExclusiveHistorySources(t *testing.T) {
+	root := t.TempDir()
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "invalid source", args: []string{"stats", "--source", "sqlite"}, want: "invalid --source"},
+		{name: "codex option for ctx", args: []string{"stats", "--source", "ctx", "--codex-home", root}, want: "--codex-home is only valid for codex"},
+		{name: "ctx option for codex", args: []string{"stats", "--source", "codex", "--ctx-data-root", root}, want: "--ctx-data-root is only valid for ctx"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := run(tt.args, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), tt.want) {
+				t.Fatalf("exit=%d stdout=%q stderr=%q, want %q", code, stdout.String(), stderr.String(), tt.want)
+			}
+		})
+	}
+}
+
+func TestRunCtxSourceAggregatesAgentsAndPassesDataRoot(t *testing.T) {
+	stamp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	turns := []usage.Turn{
+		{
+			SessionID:    "ctx\x00codex\x00session",
+			UserPrompts:  1,
+			Source:       usage.SourceRef{Source: usage.SourceCtx, Agent: "codex"},
+			RuntimeTools: []usage.ToolObservation{{CanonicalName: "shell", Status: usage.StatusSuccess, Timestamp: stamp}},
+			SkillEvidence: []usage.SkillEvidence{
+				usage.NewSkillEvidence("ctx\x00codex\x00session", "turn", "review", usage.ModeExplicit, usage.MethodStructuredTool, usage.StateConfirmed, stamp, usage.SourceRef{Source: usage.SourceCtx, Agent: "codex"}),
+			},
+		},
+		{
+			SessionID:    "ctx\x00opencode\x00session",
+			UserPrompts:  1,
+			Source:       usage.SourceRef{Source: usage.SourceCtx, Agent: "opencode"},
+			RuntimeTools: []usage.ToolObservation{{CanonicalName: "shell", Status: usage.StatusFailure, Timestamp: stamp.Add(time.Second)}},
+			SkillEvidence: []usage.SkillEvidence{
+				usage.NewSkillEvidence("ctx\x00opencode\x00session", "turn", "review", usage.ModeExplicit, usage.MethodStructuredTool, usage.StateConfirmed, stamp.Add(time.Second), usage.SourceRef{Source: usage.SourceCtx, Agent: "opencode"}),
+			},
+		},
+	}
+	loader := func(root string, options ctxsource.IngestOptions) (ctxsource.IngestResult, error) {
+		if root != "/ctx/root" || options.DataRoot != "/ctx/root" {
+			t.Fatalf("ctx root = %q options = %#v", root, options)
+		}
+		return ctxsource.IngestResult{Turns: turns, Sessions: []ctxsource.SessionMetadata{{ID: turns[0].SessionID}, {ID: turns[1].SessionID}}, Agents: []string{"opencode", "codex"}}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runWithCtxLoader([]string{"stats", "--source", "ctx", "--ctx-data-root", "/ctx/root", "--json"}, &stdout, &stderr, loader); code != 0 {
+		t.Fatalf("ctx stats exit=%d stderr=%s", code, stderr.String())
+	}
+	var stats struct {
+		Source      string   `json:"source"`
+		Agents      []string `json:"agents"`
+		Agent       string   `json:"agent"`
+		Sessions    int      `json:"sessions"`
+		UserPrompts int      `json:"user_prompts"`
+		ToolCalls   int      `json:"tool_calls"`
+		SkillUses   int      `json:"skill_uses"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Source != "ctx" || strings.Join(stats.Agents, ",") != "codex,opencode" || stats.Agent != "codex,opencode" || stats.Sessions != 2 || stats.UserPrompts != 2 || stats.ToolCalls != 2 || stats.SkillUses != 2 {
+		t.Fatalf("ctx stats = %#v", stats)
+	}
+
+	stdout.Reset()
+	if code := runWithCtxLoader([]string{"tools", "--source", "ctx", "--ctx-data-root", "/ctx/root", "--json"}, &stdout, &stderr, loader); code != 0 {
+		t.Fatalf("ctx tools exit=%d stderr=%s", code, stderr.String())
+	}
+	var toolsValue struct {
+		Rows []struct {
+			Name     string `json:"name"`
+			Calls    int    `json:"calls"`
+			Failures int    `json:"failures"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &toolsValue); err != nil {
+		t.Fatal(err)
+	}
+	if len(toolsValue.Rows) != 1 || toolsValue.Rows[0].Name != "shell" || toolsValue.Rows[0].Calls != 2 || toolsValue.Rows[0].Failures != 1 {
+		t.Fatalf("ctx tools = %#v", toolsValue)
+	}
+
+	stdout.Reset()
+	if code := runWithCtxLoader([]string{"skills", "--source", "ctx", "--ctx-data-root", "/ctx/root", "--json"}, &stdout, &stderr, loader); code != 0 {
+		t.Fatalf("ctx skills exit=%d stderr=%s", code, stderr.String())
+	}
+	var skillsValue struct {
+		Rows []struct {
+			Name  string `json:"name"`
+			Total int    `json:"total"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &skillsValue); err != nil {
+		t.Fatal(err)
+	}
+	if len(skillsValue.Rows) != 1 || skillsValue.Rows[0].Name != "review" || skillsValue.Rows[0].Total != 2 {
+		t.Fatalf("ctx skills = %#v", skillsValue)
+	}
+}
+
+func TestRunCtxStrictInputKeepsJSONAndReturnsNonZero(t *testing.T) {
+	loader := func(string, ctxsource.IngestOptions) (ctxsource.IngestResult, error) {
+		return ctxsource.IngestResult{Warnings: []usage.Warning{{Reason: "ctx_unknown_event", Type: "future", Count: 1}}}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runWithCtxLoader([]string{"stats", "--source", "ctx", "--json", "--strict-input"}, &stdout, &stderr, loader); code != 1 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var value map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &value); err != nil {
+		t.Fatalf("stdout is not JSON: %v (%s)", err, stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "strict-input") {
+		t.Fatalf("strict-input diagnostic missing: %s", stderr.String())
+	}
+}
+
+func TestRunCtxUnusedSkillsKeepsPhysicalRowsAndUsesAgentUnion(t *testing.T) {
+	first := t.TempDir()
+	second := t.TempDir()
+	writeTestSkill(t, filepath.Join(first, ".agents", "skills", "review"), "review")
+	writeTestSkill(t, filepath.Join(second, ".codex", "skills", "review"), "review")
+	loader := func(string, ctxsource.IngestOptions) (ctxsource.IngestResult, error) {
+		return ctxsource.IngestResult{Agents: []string{"codex", "opencode"}}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	args := []string{"skills", "--source", "ctx", "--ctx-data-root", "/ctx/root", "--unused", "--root", first, "--root", second, "--json"}
+	if code := runWithCtxLoader(args, &stdout, &stderr, loader); code != 0 {
+		t.Fatalf("unused ctx exit=%d stderr=%s", code, stderr.String())
+	}
+	var value struct {
+		Source         string   `json:"source"`
+		Agents         []string `json:"agents"`
+		InstalledCount int      `json:"installed_count"`
+		UnusedCount    int      `json:"unused_count"`
+		Rows           []struct {
+			Path string `json:"path"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	if value.Source != "ctx" || strings.Join(value.Agents, ",") != "codex,opencode" || value.InstalledCount != 2 || value.UnusedCount != 2 || len(value.Rows) != 2 {
+		t.Fatalf("unused ctx physical rows = %#v", value)
+	}
+	if value.Rows[0].Path >= value.Rows[1].Path {
+		t.Fatalf("unused rows are not path sorted = %#v", value.Rows)
+	}
+
+	stdout.Reset()
+	usedTurn := usage.Turn{SessionID: "ctx\x00codex\x00session", SkillEvidence: []usage.SkillEvidence{
+		usage.NewSkillEvidence("ctx\x00codex\x00session", "turn", "review", usage.ModeExplicit, usage.MethodStructuredTool, usage.StateConfirmed, time.Unix(1, 0), usage.SourceRef{Source: usage.SourceCtx, Agent: "codex"}),
+	}}
+	loader = func(string, ctxsource.IngestOptions) (ctxsource.IngestResult, error) {
+		return ctxsource.IngestResult{Turns: []usage.Turn{usedTurn}, Sessions: []ctxsource.SessionMetadata{{ID: usedTurn.SessionID}}, Agents: []string{"codex", "opencode"}}, nil
+	}
+	if code := runWithCtxLoader(args, &stdout, &stderr, loader); code != 0 {
+		t.Fatalf("used unused ctx exit=%d stderr=%s", code, stderr.String())
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	if value.UnusedCount != 0 || len(value.Rows) != 0 {
+		t.Fatalf("used name should remove both physical rows = %#v", value)
+	}
+}
+
+func TestRunHelpDocumentsHistorySourceOptions(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"stats", "--help"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("help exit=%d stderr=%s", code, stderr.String())
+	}
+	for _, want := range []string{"--source SOURCE", "codex or ctx", "--codex-home PATH", "--ctx-data-root PATH"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("help missing %q: %s", want, stdout.String())
+		}
 	}
 }
 

@@ -55,3 +55,19 @@ func TestZeroValuesAreSafe(t *testing.T) {
 		t.Fatalf("unexpected source zero value: %#v", source)
 	}
 }
+
+func TestSourceRefPreservesSourceAndAgentIdentity(t *testing.T) {
+	source := NewCtxSourceRef("ctx", "OpenCode", "provider-session", "ctx-session", "ctx-event")
+	if source.Source != SourceCtx || source.Agent != "opencode" || source.Provider != "OpenCode" {
+		t.Fatalf("source identity = %#v", source)
+	}
+	if source.ProviderSessionID != "provider-session" || source.CtxSessionID != "ctx-session" || source.EventID != "ctx-event" {
+		t.Fatalf("session identity = %#v", source)
+	}
+	if got := CanonicalAgentID(" Open-Code "); got != "open-code" {
+		t.Fatalf("canonical agent = %q", got)
+	}
+	if got := AgentDisplayName("opencode"); got != "OpenCode" {
+		t.Fatalf("agent display name = %q", got)
+	}
+}

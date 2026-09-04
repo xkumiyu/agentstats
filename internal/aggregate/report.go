@@ -13,6 +13,8 @@ type Input struct {
 	Turns        []usage.Turn
 	SessionCount int
 	Warnings     []usage.Warning
+	Source       usage.SourceKind
+	Agents       []string
 }
 
 // SkillGroupBy controls the unit counted for Skill usage.
@@ -160,7 +162,7 @@ func groupSkillUses(uses []usage.SkillUse, groupBy SkillGroupBy) []usage.SkillUs
 	}
 	entries := make(map[string]*entry, len(uses))
 	for _, item := range uses {
-		key := item.SessionID + "\x00" + item.SkillName
+		key := string(item.Source.Source) + "\x00" + item.Source.Agent + "\x00" + item.SessionID + "\x00" + item.SkillName
 		current, ok := entries[key]
 		if !ok {
 			copy := item

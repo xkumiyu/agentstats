@@ -246,7 +246,7 @@ func MergeSkillEvidence(evidence []SkillEvidence) []SkillUse {
 	explicitRequests := make(map[string]struct{}, len(evidence))
 	for _, item := range evidence {
 		if item.Method == MethodExplicitRequest {
-			explicitRequests[item.SessionID+"\x00"+item.TurnID+"\x00"+item.SkillName] = struct{}{}
+			explicitRequests[skillEvidenceKey(item)] = struct{}{}
 		}
 	}
 	entries := make(map[string]*entry, len(evidence))
@@ -258,7 +258,7 @@ func MergeSkillEvidence(evidence []SkillEvidence) []SkillUse {
 		if item.Mode == "" {
 			item.Mode = ModeUnknown
 		}
-		key := item.SessionID + "\x00" + item.TurnID + "\x00" + item.SkillName
+		key := skillEvidenceKey(item)
 		current, ok := entries[key]
 		if !ok {
 			current = &entry{use: NewSkillUse(item.SessionID, item.TurnID, item.SkillName, item.Mode, item.State, item.Timestamp, item.Source), methods: make(map[SkillEvidenceMethod]struct{}), modes: make(map[SkillMode]struct{})}
@@ -310,7 +310,7 @@ func resolveInjectionMode(item SkillEvidence, explicitRequests map[string]struct
 	if item.Method != MethodSkillInjection && item.Method != MethodSelectedSkillInstructions && item.Method != MethodRuntimeSkillItem {
 		return item.Mode, item.Method
 	}
-	key := item.SessionID + "\x00" + item.TurnID + "\x00" + item.SkillName
+	key := skillEvidenceKey(item)
 	if _, ok := explicitRequests[key]; ok {
 		return ModeExplicit, item.Method
 	}
@@ -318,6 +318,14 @@ func resolveInjectionMode(item SkillEvidence, explicitRequests map[string]struct
 		return ModeUnknown, item.Method
 	}
 	return item.Mode, item.Method
+}
+
+func skillEvidenceKey(item SkillEvidence) string {
+	return sourceIdentity(item.Source) + "\x00" + item.SessionID + "\x00" + item.TurnID + "\x00" + item.SkillName
+}
+
+func sourceIdentity(source SourceRef) string {
+	return string(source.Source) + "\x00" + source.Agent + "\x00" + source.Provider + "\x00" + source.ProviderSessionID + "\x00" + source.CtxSessionID
 }
 
 func modeRank(mode SkillMode) int {
@@ -610,6 +618,10 @@ func collectCommandSegment(words []string, result *[]string, seen map[string]str
 		return
 	}
 	words = stripAssignments(words)
+	if nested, ok := nestedRTKCommand(words); ok {
+		collectCommandPaths(nested, result, seen, depth+1)
+		return
+	}
 	for len(words) > 0 {
 		base := commandBase(words[0])
 		if shellCommand(base) {
@@ -641,6 +653,29 @@ func collectCommandSegment(words []string, result *[]string, seen map[string]str
 			appendCommandPath(path, result, seen)
 		}
 	}
+}
+
+// nestedRTKCommand unwraps rtk's command-string form. Unlike rtk proxy,
+// rtk run -c passes the actual shell command as one argument, so the normal
+// wrapper unwrapping would stop at the -c flag before reaching the reader.
+func nestedRTKCommand(words []string) (string, bool) {
+	if len(words) < 4 || commandBase(words[0]) != "rtk" {
+		return "", false
+	}
+	switch commandBase(words[1]) {
+	case "run", "exec", "command":
+	default:
+		return "", false
+	}
+	for i := 2; i+1 < len(words); i++ {
+		switch strings.ToLower(words[i]) {
+		case "-c", "--command":
+			if strings.TrimSpace(words[i+1]) != "" {
+				return words[i+1], true
+			}
+		}
+	}
+	return "", false
 }
 
 func stripAssignments(words []string) []string {
@@ -814,7 +849,7 @@ func dedupeEvidence(in []SkillEvidence) []SkillEvidence {
 	seen := make(map[string]struct{}, len(in))
 	out := make([]SkillEvidence, 0, len(in))
 	for _, item := range in {
-		key := item.SessionID + "\x00" + item.TurnID + "\x00" + item.SkillName + "\x00" + string(item.Method)
+		key := sourceIdentity(item.Source) + "\x00" + item.SessionID + "\x00" + item.TurnID + "\x00" + item.SkillName + "\x00" + string(item.Method)
 		if _, ok := seen[key]; ok {
 			continue
 		}

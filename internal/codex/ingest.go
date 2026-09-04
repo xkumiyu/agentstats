@@ -160,7 +160,7 @@ func DecodeFile(path string, opts DecodeOptions, fn func(Envelope)) (err error) 
 					if tsErr != nil && len(raw.Timestamp) > 0 && string(raw.Timestamp) != "null" {
 						warnings.Add("invalid_timestamp", path, lineNo)
 					}
-					fn(Envelope{Timestamp: ts, Type: raw.Type, Payload: raw.Payload, SessionID: raw.SessionID, Source: usage.NewSourceRef(path, lineNo, "")})
+					fn(Envelope{Timestamp: ts, Type: raw.Type, Payload: raw.Payload, SessionID: raw.SessionID, Source: usage.NewCodexSourceRef(path, lineNo, "")})
 				}
 			}
 		}

@@ -5,7 +5,7 @@ agentstatsは、Codexの利用状況を確認するコマンドラインツー�
 [English version](README.md)
 
 > [!NOTE]
-> 現在はCodexの履歴を対象としています。
+> agentstatsは、Codexの履歴とctxが提供する読み取り専用イベントストリームに対応しています。
 
 ## クイックスタート
 
@@ -39,11 +39,17 @@ agentstats skills  # Skillごとの利用状況
 
 機械可読な出力が必要な場合は`--json`を指定します。
 
+## 履歴ソースの選択
+
+デフォルトはCodexです。1回の実行で選択できるsourceは1つだけで、Codexとctxの
+履歴は合算しません。ctxの履歴を使う場合は`--source ctx`を指定します。
+
 ## 出力例: `agentstats tools`
 
 ```text
 TOOL USAGE
-Agent: Codex
+Source: ctx (/path/to/ctx-data)
+Agents: Codex, OpenCode
 Period: all time
 Layer: effective
 
@@ -52,6 +58,18 @@ Tool       Calls  Failures  Last Used
 shell          42         0  2026-09-03 14:20 JST
 
 1 tool, 42 calls total
+```
+
+JSON出力には`source`とcanonicalな`agents`配列が追加されます。後方互換の
+`agent`文字列も残ります。デフォルトのCodexソースでは`codex`、ctxの単一Agentでは
+そのcanonical Agent ID、複数Agentでは決定的順序のcomma区切り値になります。
+
+```json
+{
+  "source": "ctx",
+  "agents": ["codex", "opencode"],
+  "agent": "codex,opencode"
+}
 ```
 
 ## Skill集計の見方
@@ -84,6 +102,24 @@ agentstats skills --view all
 context行に`View: auto (selected: mode)`のような形式で実際に選ばれたviewを表示します。`mode`はactivation evidence、
 `state`はevidence stateと`Last Used`、明示した`all`は両方の表を分けて表示します。
 
+## 未使用Skillの確認
+
+`skills`に`--unused`を指定すると、選択した履歴ソースとインストール済みSkillの
+inventoryを比較できます。
+
+```sh
+agentstats skills --source ctx --ctx-data-root /path/to/ctx-data \
+  --unused --root /path/to/skills
+```
+
+inventoryのidentityはcanonical skill nameと絶対物理PATHの組み合わせです。そのため、
+異なるPATHに同名Skillがある場合、その名前が未使用なら別々の行として表示されます。
+使用済み判定はcanonical name単位のままです。選択したctxのいずれかのAgentがその名前を
+使用していれば、その名前のinventory行はすべて使用済みとみなします。inventory root
+（`--root`）と履歴ソース（`--source`）は独立しています。
+
 ## データの扱い
 
-Codexホーム配下の履歴だけを読み取り、元のファイルは変更しません。履歴を外部へ送信せず、通常の出力にユーザー本文、コマンド本文、その他のraw event詳細を含めません。
+Codexの履歴またはctxの公開された読み取り専用イベントストリームだけを読み取り、
+選択したデータを変更しません。履歴を外部へ送信せず、通常の出力にユーザー本文、
+コマンド本文、その他のraw event詳細を含めません。

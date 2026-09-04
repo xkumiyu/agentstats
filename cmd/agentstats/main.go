@@ -13,6 +13,7 @@ import (
 
 	"github.com/xkumiyu/agentstats/internal/aggregate"
 	"github.com/xkumiyu/agentstats/internal/codex"
+	ctxsource "github.com/xkumiyu/agentstats/internal/ctx"
 	"github.com/xkumiyu/agentstats/internal/output"
 	"github.com/xkumiyu/agentstats/internal/skillinventory"
 	"github.com/xkumiyu/agentstats/internal/usage"
@@ -25,7 +26,7 @@ const usageText = `Usage:
   agentstats --version
 
 Commands:
-  stats     Show an overview of Codex usage
+  stats     Show an overview of agent usage
   tools     Show tool usage by canonical name
   skills    Show skill usage and evidence state
 
@@ -38,11 +39,13 @@ Run "agentstats <command> --help" for command-specific options.
 
 const statsUsageText = `Usage: agentstats stats [options]
 
-Show an overview of Codex usage.
+Show an overview of agent usage.
 
 Options:
+  --source SOURCE   codex or ctx (default: codex)
   --days N          Include the last N days (N >= 1)
-  --codex-home PATH Read a specific Codex home
+  --codex-home PATH Override CODEX_HOME for this invocation
+  --ctx-data-root PATH Read a specific ctx data root
   --color MODE      auto, always, or never (human report only)
   --group-by UNIT   turn or session
   --verbose         Show input diagnostic details
@@ -56,8 +59,10 @@ const toolsUsageText = `Usage: agentstats tools [options]
 Show tool usage by canonical name.
 
 Options:
+  --source SOURCE   codex or ctx (default: codex)
   --days N          Include the last N days (N >= 1)
-  --codex-home PATH Read a specific Codex home
+  --codex-home PATH Override CODEX_HOME for this invocation
+  --ctx-data-root PATH Read a specific ctx data root
   --color MODE      auto, always, or never (human report only)
   --layer LAYER     effective, runtime, or model
   --verbose         Show input diagnostic details
@@ -71,8 +76,10 @@ const skillsUsageText = `Usage: agentstats skills [options]
 Show skill usage and evidence state.
 
 Options:
+  --source SOURCE   codex or ctx (default: codex)
   --days N          Include the last N days (N >= 1)
-  --codex-home PATH Read a specific Codex home
+  --codex-home PATH Override CODEX_HOME for this invocation
+  --ctx-data-root PATH Read a specific ctx data root
   --color MODE      auto, always, or never (human report only)
   --group-by UNIT   turn or session
   --strict          Count confirmed skill evidence only
@@ -123,7 +130,20 @@ func (values *stringList) Set(value string) error {
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
+func legacyAgentValue(agents []string) string {
+	if len(agents) == 0 {
+		return ""
+	}
+	return strings.Join(agents, ",")
+}
+
+type ctxHistoryLoader func(string, ctxsource.IngestOptions) (ctxsource.IngestResult, error)
+
 func run(args []string, stdout, stderr io.Writer) int {
+	return runWithCtxLoader(args, stdout, stderr, ctxsource.Load)
+}
+
+func runWithCtxLoader(args []string, stdout, stderr io.Writer, loadCtx ctxHistoryLoader) int {
 	_, noColor := os.LookupEnv("NO_COLOR")
 	diagnostics := newDiagnosticWriter(stderr, output.ColorAuto, noColor)
 	if len(args) == 0 {
@@ -163,8 +183,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet(kind, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = func() { _, _ = fmt.Fprint(stderr, commandUsage(kind)) }
+	source := flags.String("source", string(usage.SourceCodex), "history source")
 	days := flags.Int("days", 0, "include the last N days")
-	codexHome := flags.String("codex-home", "", "Codex home path")
+	codexHome := flags.String("codex-home", "", "override CODEX_HOME for this invocation")
+	ctxDataRoot := flags.String("ctx-data-root", "", "ctx data root path")
 	color := flags.String("color", string(output.ColorAuto), "human report color mode")
 	layer := flags.String("layer", string(usage.LayerEffective), "tool layer")
 	groupBy := flags.String("group-by", string(aggregate.SkillGroupByTurn), "skill aggregation unit")
@@ -184,6 +206,29 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if extra := flags.Args(); len(extra) > 0 {
 		diagnostics.errorf("unexpected argument %q", extra[0])
+		return 2
+	}
+	selectedSource := usage.SourceKind(strings.ToLower(strings.TrimSpace(*source)))
+	if !selectedSource.Valid() {
+		diagnostics.errorf("invalid --source %q (want codex or ctx)", *source)
+		return 2
+	}
+	codexHomeSet := false
+	ctxDataRootSet := false
+	flags.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "codex-home":
+			codexHomeSet = true
+		case "ctx-data-root":
+			ctxDataRootSet = true
+		}
+	})
+	if selectedSource == usage.SourceCtx && codexHomeSet {
+		diagnostics.errorf("--codex-home is only valid for codex source")
+		return 2
+	}
+	if selectedSource == usage.SourceCodex && ctxDataRootSet {
+		diagnostics.errorf("--ctx-data-root is only valid for ctx source")
 		return 2
 	}
 	mode := output.ColorMode(*color)
@@ -253,23 +298,45 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	home, err := codex.ResolveHome(*codexHome)
-	if err != nil {
-		diagnostics.errorf("resolve Codex home: %v", err)
-		return 1
-	}
 	now := time.Now().UTC()
 	progress := newSpinner(stderr, !*jsonOutput && diagnostics.capabilities.IsTTY, diagnostics.capabilities.ColorsEnabled())
-	stopProgress := progress.Start("Reading Codex history")
-	input, err := codex.Load(home, codex.IngestOptions{Days: *days, DaysSet: daysSet, Now: now})
-	if err != nil {
-		stopProgress()
-		diagnostics.errorf("read Codex history %q: %v", home, err)
-		return 1
+	var (
+		turns        []usage.Turn
+		sessionCount int
+		warnings     []usage.Warning
+		agents       []string
+		sourcePath   string
+		stopProgress func()
+	)
+	if selectedSource == usage.SourceCtx {
+		sourcePath = strings.TrimSpace(*ctxDataRoot)
+		stopProgress = progress.Start("Reading ctx history")
+		input, loadErr := loadCtx(*ctxDataRoot, ctxsource.IngestOptions{DataRoot: *ctxDataRoot, Days: *days, DaysSet: daysSet, Now: now})
+		if loadErr != nil {
+			stopProgress()
+			diagnostics.errorf("read ctx history: %v", loadErr)
+			return 1
+		}
+		turns, sessionCount, warnings, agents = input.Turns, len(input.Sessions), input.Warnings, input.Agents
+	} else {
+		home, resolveErr := codex.ResolveHome(*codexHome)
+		if resolveErr != nil {
+			diagnostics.errorf("resolve Codex home: %v", resolveErr)
+			return 1
+		}
+		sourcePath = home
+		stopProgress = progress.Start("Reading Codex history")
+		input, loadErr := codex.Load(home, codex.IngestOptions{Days: *days, DaysSet: daysSet, Now: now})
+		if loadErr != nil {
+			stopProgress()
+			diagnostics.errorf("read Codex history %q: %v", home, loadErr)
+			return 1
+		}
+		turns, sessionCount, warnings = input.Turns, len(input.Sessions), input.Warnings
+		agents = []string{"codex"}
 	}
-	aggregateInput := aggregate.Input{Turns: input.Turns, SessionCount: len(input.Sessions), Warnings: input.Warnings}
+	aggregateInput := aggregate.Input{Turns: turns, SessionCount: sessionCount, Warnings: warnings, Source: selectedSource, Agents: agents}
 	report := aggregate.Report{}
-	warnings := input.Warnings
 	var inventorySnapshot skillinventory.InventorySnapshot
 	if *unused {
 		stopProgress = startProgressPhase(stopProgress, progress.Start, "Scanning installed skills")
@@ -311,7 +378,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if daysSet {
 		period = fmt.Sprintf("last %d days", *days)
 	}
-	context := output.ReportContext{Agent: "codex", Period: period, Layer: selectedLayer, SkillGroupBy: selectedGroupBy, SkillUsageView: selectedSkillUsageView, Strict: *strict, ReferenceTime: now, Location: time.Local}
+	context := output.ReportContext{Source: selectedSource, SourcePath: sourcePath, Agents: agents, Agent: legacyAgentValue(agents), Period: period, Layer: selectedLayer, SkillGroupBy: selectedGroupBy, SkillUsageView: selectedSkillUsageView, Strict: *strict, ReferenceTime: now, Location: time.Local}
 	if *unused {
 		context.SkillView = output.SkillViewUnused
 		context.SkillRoots = append([]string{}, inventorySnapshot.Roots...)
@@ -478,6 +545,18 @@ func warningDescription(reason string) string {
 		return "skipped empty history line"
 	case "malformed_json":
 		return "skipped malformed JSON record"
+	case "ctx_malformed_json":
+		return "skipped malformed ctx event record"
+	case "ctx_invalid_event":
+		return "skipped invalid ctx event"
+	case "ctx_unknown_record":
+		return "skipped unknown ctx stream record"
+	case "ctx_unknown_event":
+		return "skipped unknown ctx event"
+	case "ctx_invalid_timestamp":
+		return "ctx event has an invalid timestamp"
+	case "ctx_missing_agent":
+		return "ctx event has no agent identity"
 	case "unknown_type":
 		return "skipped unknown record type"
 	case "invalid_timestamp":
