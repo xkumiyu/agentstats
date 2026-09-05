@@ -20,7 +20,7 @@ func TestLoadDoesNotModifyHistoryFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(home, IngestOptions{Now: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)}); err != nil {
+	if _, err := Load(home, IngestOptions{Now: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), CacheDir: t.TempDir()}); err != nil {
 		t.Fatal(err)
 	}
 	after, err := os.Stat(path)

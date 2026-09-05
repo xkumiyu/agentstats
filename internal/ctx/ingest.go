@@ -8,23 +8,31 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/xkumiyu/agentstats/internal/cache"
 	"github.com/xkumiyu/agentstats/internal/usage"
 )
 
-const pageLimit = 10_000
+const (
+	pageLimit        = 100_000
+	probePageLimit   = 1
+	ctxParserVersion = "ctx-normalizer-v1"
+)
 
 // CommandResult is the result of one ctx invocation. The runner is injectable
 // so tests can exercise the public stream contract without a real ctx store.
 type CommandResult struct {
-	Stdout   []byte
-	Stderr   []byte
-	ExitCode int
+	Stdout     []byte
+	StdoutPath string
+	Stderr     []byte
+	ExitCode   int
 }
 
 type CommandRunner func(args []string) (CommandResult, error)
@@ -35,6 +43,7 @@ type IngestOptions struct {
 	DaysSet  bool
 	Now      time.Time
 	Runner   CommandRunner
+	CacheDir string
 }
 
 type IngestResult struct {
@@ -54,7 +63,11 @@ type SessionMetadata struct {
 }
 
 type event struct {
-	Raw               map[string]any
+	PayloadValues     []any
+	Text              string
+	SkillTexts        []string
+	SelectedSkill     bool
+	TurnIDValue       string
 	ID                string
 	CtxSessionID      string
 	Provider          string
@@ -69,7 +82,6 @@ type event struct {
 }
 
 type page struct {
-	Events       []event
 	NextCursor   string
 	Terminal     bool
 	Truncated    bool
@@ -88,10 +100,18 @@ func Load(dataRoot string, options IngestOptions) (IngestResult, error) {
 	if runner == nil {
 		runner = runCommand
 	}
+	if strings.TrimSpace(options.CacheDir) != "" {
+		return loadCached(options, runner)
+	}
 	return load(options, runner)
 }
 
 func load(options IngestOptions, runner CommandRunner) (IngestResult, error) {
+	result, _, err := loadStream(options, runner, true)
+	return result, err
+}
+
+func loadStream(options IngestOptions, runner CommandRunner, includeRange bool) (IngestResult, string, error) {
 	now := options.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -99,103 +119,272 @@ func load(options IngestOptions, runner CommandRunner) (IngestResult, error) {
 	var cutoff time.Time
 	if options.DaysSet || options.Days != 0 {
 		if options.Days <= 0 {
-			return IngestResult{}, errors.New("days must be at least 1")
+			return IngestResult{}, "", errors.New("days must be at least 1")
 		}
 		cutoff = now.Add(-time.Duration(options.Days) * 24 * time.Hour)
 	}
-
-	var events []event
-	warnings := make([]usage.Warning, 0)
+	assembler := newAssembler(nil)
 	seenEvents := make(map[string]struct{})
 	previousCursor := ""
 	seenCursors := make(map[string]struct{})
 	generation := ""
 	for {
-		args := []string{"list", "events", "--content", "full", "--format", "jsonl", "--quiet", "--limit", strconv.Itoa(pageLimit)}
-		if strings.TrimSpace(options.DataRoot) != "" {
-			args = append(args, "--data-root", options.DataRoot)
-		}
-		if !cutoff.IsZero() {
-			args = append(args, "--since", cutoff.UTC().Truncate(time.Millisecond).Format(time.RFC3339Nano))
-			args = append(args, "--until", now.UTC().Truncate(time.Millisecond).Format(time.RFC3339Nano))
-		}
-		if previousCursor != "" {
-			args = append(args, "--cursor", previousCursor)
-		}
+		args := eventQueryArgs(options, now, pageLimit, includeRange, previousCursor, "full")
 		result, err := runner(args)
 		if err != nil {
-			return IngestResult{}, commandError(result, err)
+			return IngestResult{}, "", commandError(result, err)
 		}
 		if result.ExitCode != 0 {
-			return IngestResult{}, commandError(result, fmt.Errorf("exit code %d", result.ExitCode))
+			return IngestResult{}, "", commandError(result, fmt.Errorf("exit code %d", result.ExitCode))
 		}
-		current, err := parsePage(result.Stdout)
-		if err != nil {
-			return IngestResult{}, err
-		}
-		warnings = append(warnings, current.Warnings...)
-		if current.GenerationID != "" {
-			if generation != "" && generation != current.GenerationID {
-				return IngestResult{}, fmt.Errorf("ctx event stream changed generation from %q to %q", generation, current.GenerationID)
-			}
-			generation = current.GenerationID
-		}
-		for _, item := range current.Events {
-			if !accept(item.Timestamp, cutoff, cutoff.Add(time.Duration(options.Days)*24*time.Hour)) {
-				continue
+		current, err := parseCommandPage(result, func(item event) {
+			if includeRange && !accept(item.Timestamp, cutoff, now) {
+				return
 			}
 			if item.ID != "" {
 				if _, ok := seenEvents[item.ID]; ok {
-					continue
+					return
 				}
 				seenEvents[item.ID] = struct{}{}
 			}
-			events = append(events, item)
+			assembler.consume(item)
+		})
+		if err != nil {
+			return IngestResult{}, "", err
+		}
+		assembler.warnings = append(assembler.warnings, current.Warnings...)
+		if current.GenerationID != "" {
+			if generation != "" && generation != current.GenerationID {
+				return IngestResult{}, "", fmt.Errorf("ctx event stream changed generation from %q to %q", generation, current.GenerationID)
+			}
+			generation = current.GenerationID
 		}
 		if current.NextCursor == "" {
 			if !current.Terminal || current.Truncated {
-				return IngestResult{}, errors.New("ctx event stream ended without terminal completion")
+				return IngestResult{}, "", errors.New("ctx event stream ended without terminal completion")
 			}
 			break
 		}
 		if current.NextCursor == previousCursor {
-			return IngestResult{}, errors.New("ctx event stream returned an unchanged cursor")
+			return IngestResult{}, "", errors.New("ctx event stream returned an unchanged cursor")
 		}
 		if _, ok := seenCursors[current.NextCursor]; ok {
-			return IngestResult{}, errors.New("ctx event stream returned a repeated cursor")
+			return IngestResult{}, "", errors.New("ctx event stream returned a repeated cursor")
 		}
 		seenCursors[current.NextCursor] = struct{}{}
 		previousCursor = current.NextCursor
 	}
-
-	sort.SliceStable(events, func(i, j int) bool {
-		if events[i].Timestamp.Equal(events[j].Timestamp) {
-			if events[i].Sequence == events[j].Sequence {
-				if events[i].Ordinal == events[j].Ordinal {
-					return events[i].ID < events[j].ID
-				}
-				return events[i].Ordinal < events[j].Ordinal
-			}
-			return events[i].Sequence < events[j].Sequence
-		}
-		if events[i].Timestamp.IsZero() {
-			return false
-		}
-		if events[j].Timestamp.IsZero() {
-			return true
-		}
-		return events[i].Timestamp.Before(events[j].Timestamp)
-	})
-
-	assembler := newAssembler(cutoff, warnings)
-	for _, item := range events {
-		assembler.consume(item)
-	}
 	assembler.flush()
-	return assembler.result(), nil
+	return assembler.result(), generation, nil
+}
+
+func eventQueryArgs(options IngestOptions, now time.Time, limit int, includeRange bool, cursor, content string) []string {
+	args := []string{"list", "events", "--content", content, "--format", "jsonl", "--quiet", "--limit", strconv.Itoa(limit)}
+	if strings.TrimSpace(options.DataRoot) != "" {
+		args = append(args, "--data-root", options.DataRoot)
+	}
+	if includeRange && (options.DaysSet || options.Days != 0) {
+		cutoff := now.Add(-time.Duration(options.Days) * 24 * time.Hour)
+		args = append(args, "--since", cutoff.UTC().Truncate(time.Millisecond).Format(time.RFC3339Nano))
+		args = append(args, "--until", now.UTC().Truncate(time.Millisecond).Format(time.RFC3339Nano))
+	}
+	if cursor != "" {
+		args = append(args, "--cursor", cursor)
+	}
+	return args
+}
+
+func loadCached(options IngestOptions, runner CommandRunner) (IngestResult, error) {
+	if (options.DaysSet || options.Days != 0) && options.Days <= 0 {
+		return IngestResult{}, errors.New("days must be at least 1")
+	}
+	now := options.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	scope := canonicalDataRoot(options.DataRoot)
+	store := cache.New(options.CacheDir)
+	generation, _ := probeGeneration(options, runner, now)
+	if generation != "" {
+		data, hit, _ := store.Read("ctx", scope, generation, ctxParserVersion)
+		if hit {
+			var snapshot cache.Snapshot
+			if err := json.Unmarshal(data, &snapshot); err == nil {
+				return filterCachedResult(resultFromSnapshot(snapshot), options, now), nil
+			}
+		}
+	}
+	if options.DaysSet || options.Days != 0 {
+		// A range query remains bounded for a first --days invocation. Its
+		// result is intentionally not published as a complete generation cache.
+		result, _, err := loadStream(options, runner, true)
+		return result, err
+	}
+	fullOptions := options
+	fullOptions.Days = 0
+	fullOptions.DaysSet = false
+	result, fullGeneration, err := loadStream(fullOptions, runner, false)
+	if err != nil {
+		return IngestResult{}, err
+	}
+	if fullGeneration != "" {
+		_ = store.Write("ctx", scope, fullGeneration, ctxParserVersion, snapshotFromResult(result))
+	}
+	return result, nil
+}
+
+func probeGeneration(options IngestOptions, runner CommandRunner, now time.Time) (string, error) {
+	result, err := runner(eventQueryArgs(options, now, probePageLimit, false, "", "none"))
+	if err != nil {
+		return "", commandError(result, err)
+	}
+	if result.ExitCode != 0 {
+		return "", commandError(result, fmt.Errorf("exit code %d", result.ExitCode))
+	}
+	page, err := parseCommandPage(result, func(event) {})
+	if err != nil {
+		return "", err
+	}
+	return page.GenerationID, nil
+}
+
+func snapshotFromResult(result IngestResult) cache.Snapshot {
+	snapshot := cache.Snapshot{
+		Agents:   append([]string(nil), result.Agents...),
+		Warnings: append([]usage.Warning(nil), result.Warnings...),
+	}
+	for _, turn := range result.Turns {
+		snapshot.Turns = append(snapshot.Turns, cache.TurnFromUsage(turn))
+	}
+	for _, session := range result.Sessions {
+		snapshot.Sessions = append(snapshot.Sessions, cache.Session{
+			ID:                session.ID,
+			Agent:             session.Agent,
+			Provider:          session.Provider,
+			ProviderSessionID: session.ProviderSessionID,
+			CtxSessionID:      session.CtxSessionID,
+			Source:            cache.SourceRefFromUsage(session.Source),
+		})
+	}
+	return snapshot
+}
+
+func resultFromSnapshot(snapshot cache.Snapshot) IngestResult {
+	result := IngestResult{
+		Agents:   append([]string(nil), snapshot.Agents...),
+		Warnings: append([]usage.Warning(nil), snapshot.Warnings...),
+	}
+	for _, turn := range snapshot.Turns {
+		result.Turns = append(result.Turns, turn.Usage())
+	}
+	for _, session := range snapshot.Sessions {
+		result.Sessions = append(result.Sessions, SessionMetadata{
+			ID:                session.ID,
+			Agent:             session.Agent,
+			Provider:          session.Provider,
+			ProviderSessionID: session.ProviderSessionID,
+			CtxSessionID:      session.CtxSessionID,
+			Source:            session.Source.Usage(),
+		})
+	}
+	return result
+}
+
+func filterCachedResult(result IngestResult, options IngestOptions, now time.Time) IngestResult {
+	if !options.DaysSet && options.Days == 0 {
+		return result
+	}
+	cutoff := now.Add(-time.Duration(options.Days) * 24 * time.Hour)
+	filtered := result
+	filtered.Turns = nil
+	selectedSessions := make(map[string]struct{})
+	selectedAgents := make(map[string]struct{})
+	for _, turn := range result.Turns {
+		filteredTurn, ok := filterCtxTurn(turn, cutoff, now)
+		if !ok {
+			continue
+		}
+		filtered.Turns = append(filtered.Turns, filteredTurn)
+		selectedSessions[turn.SessionID] = struct{}{}
+		if turn.Source.Agent != "" {
+			selectedAgents[turn.Source.Agent] = struct{}{}
+		}
+	}
+	filtered.Sessions = nil
+	for _, session := range result.Sessions {
+		if _, ok := selectedSessions[session.ID]; ok {
+			filtered.Sessions = append(filtered.Sessions, session)
+		}
+	}
+	filtered.Agents = nil
+	for _, agent := range result.Agents {
+		if _, ok := selectedAgents[agent]; ok {
+			filtered.Agents = append(filtered.Agents, agent)
+		}
+	}
+	return filtered
+}
+
+func filterCtxTurn(turn usage.Turn, cutoff, until time.Time) (usage.Turn, bool) {
+	when := turn.EndedAt
+	if when.IsZero() {
+		when = turn.StartedAt
+	}
+	if !accept(when, cutoff, until) {
+		return usage.Turn{}, false
+	}
+	filtered := turn
+	if len(turn.UserPromptTimes) > 0 {
+		filtered.UserPromptTimes = filtered.UserPromptTimes[:0]
+		for _, timestamp := range turn.UserPromptTimes {
+			if accept(timestamp, cutoff, until) {
+				filtered.UserPromptTimes = append(filtered.UserPromptTimes, timestamp)
+			}
+		}
+		filtered.UserPrompts = len(filtered.UserPromptTimes)
+	}
+	filtered.ModelTools = filterCtxTools(turn.ModelTools, cutoff, until)
+	filtered.RuntimeTools = filterCtxTools(turn.RuntimeTools, cutoff, until)
+	filtered.SkillEvidence = filterCtxSkills(turn.SkillEvidence, cutoff, until)
+	return filtered, true
+}
+
+func filterCtxTools(values []usage.ToolObservation, cutoff, until time.Time) []usage.ToolObservation {
+	filtered := values[:0]
+	for _, value := range values {
+		if accept(value.Timestamp, cutoff, until) {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
+}
+
+func filterCtxSkills(values []usage.SkillEvidence, cutoff, until time.Time) []usage.SkillEvidence {
+	filtered := values[:0]
+	for _, value := range values {
+		if accept(value.Timestamp, cutoff, until) {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
+}
+
+func canonicalDataRoot(root string) string {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return "default"
+	}
+	clean := filepath.Clean(root)
+	if absolute, err := filepath.Abs(clean); err == nil {
+		return absolute
+	}
+	return clean
 }
 
 func commandError(result CommandResult, err error) error {
+	if result.StdoutPath != "" {
+		_ = os.Remove(result.StdoutPath)
+	}
 	message := strings.TrimSpace(string(result.Stderr))
 	if message != "" {
 		return fmt.Errorf("ctx event enumeration: %w: %s", err, message)
@@ -205,23 +394,57 @@ func commandError(result CommandResult, err error) error {
 
 func runCommand(args []string) (CommandResult, error) {
 	command := exec.Command("ctx", args...)
-	var stdout, stderr bytes.Buffer
-	command.Stdout = &stdout
-	command.Stderr = &stderr
-	err := command.Run()
-	code := 0
+	stdout, err := os.CreateTemp("", ".agentstats-ctx-output-*")
 	if err != nil {
+		return CommandResult{}, fmt.Errorf("create ctx output temporary file: %w", err)
+	}
+	stdoutPath := stdout.Name()
+	if err := stdout.Chmod(0o600); err != nil {
+		_ = os.Remove(stdoutPath)
+		_ = stdout.Close()
+		return CommandResult{}, fmt.Errorf("secure ctx output temporary file: %w", err)
+	}
+	var stderr bytes.Buffer
+	command.Stdout = stdout
+	command.Stderr = &stderr
+	runErr := command.Run()
+	closeErr := stdout.Close()
+	code := 0
+	if runErr != nil {
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if errors.As(runErr, &exitErr) {
 			code = exitErr.ExitCode()
 		}
 	}
-	return CommandResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), ExitCode: code}, err
+	if closeErr != nil && runErr == nil {
+		runErr = closeErr
+	}
+	if runErr != nil {
+		_ = os.Remove(stdoutPath)
+		return CommandResult{Stderr: stderr.Bytes(), ExitCode: code}, runErr
+	}
+	return CommandResult{StdoutPath: stdoutPath, Stderr: stderr.Bytes(), ExitCode: code}, nil
 }
 
-func parsePage(data []byte) (page, error) {
+func parseCommandPage(result CommandResult, consume func(event)) (page, error) {
+	if result.StdoutPath == "" {
+		return parsePageReader(bytes.NewReader(result.Stdout), consume)
+	}
+	file, err := os.Open(result.StdoutPath)
+	if err != nil {
+		_ = os.Remove(result.StdoutPath)
+		return page{}, fmt.Errorf("open ctx event page: %w", err)
+	}
+	defer func() {
+		_ = file.Close()
+		_ = os.Remove(result.StdoutPath)
+	}()
+	return parsePageReader(file, consume)
+}
+
+func parsePageReader(input io.Reader, consume func(event)) (page, error) {
 	result := page{}
-	reader := bufio.NewReader(bytes.NewReader(data))
+	reader := bufio.NewReaderSize(input, 64<<10)
 	lineNo := 0
 	for {
 		line, readErr := reader.ReadBytes('\n')
@@ -242,7 +465,9 @@ func parsePage(data []byte) (page, error) {
 						if event.TimestampInvalid {
 							result.Warnings = append(result.Warnings, warning("ctx_invalid_timestamp", event.EventType, lineNo))
 						}
-						result.Events = append(result.Events, event)
+						if consume != nil {
+							consume(event)
+						}
 					}
 				case "event_range_completion":
 					if result.Complete {
@@ -278,8 +503,7 @@ func eventFromMap(raw map[string]any, line int) event {
 		provider = firstString(source, "provider")
 	}
 	timestamp, timestampInvalid := eventTimestamp(raw)
-	return event{
-		Raw:               raw,
+	item := event{
 		ID:                firstString(raw, "ctx_event_id", "event_id"),
 		CtxSessionID:      firstString(raw, "ctx_session_id", "session_uuid"),
 		Provider:          provider,
@@ -292,6 +516,12 @@ func eventFromMap(raw map[string]any, line int) event {
 		Ordinal:           integerValue(raw, "ordinal"),
 		Line:              line,
 	}
+	item.PayloadValues = eventPayloadValues(raw)
+	item.Text = eventTextValues(item.PayloadValues)
+	item.SkillTexts = eventSkillTextsValues(item.PayloadValues)
+	item.SelectedSkill = hasSelectedSkillInstructionsValues(item.PayloadValues)
+	item.TurnIDValue = turnIDFromValues(item.PayloadValues)
+	return item
 }
 
 func eventTimestamp(raw map[string]any) (time.Time, bool) {
@@ -322,7 +552,6 @@ func warning(reason, typ string, line int) usage.Warning {
 }
 
 type assembler struct {
-	cutoff   time.Time
 	warnings []usage.Warning
 	turns    []usage.Turn
 	current  map[string]*turnState
@@ -337,9 +566,8 @@ type turnState struct {
 	explicitID bool
 }
 
-func newAssembler(cutoff time.Time, warnings []usage.Warning) *assembler {
+func newAssembler(warnings []usage.Warning) *assembler {
 	return &assembler{
-		cutoff:   cutoff,
 		warnings: append([]usage.Warning(nil), warnings...),
 		current:  make(map[string]*turnState),
 		ordinals: make(map[string]int),
@@ -485,23 +713,24 @@ func (a *assembler) result() IngestResult {
 }
 
 func (a *assembler) observe(current *turnState, item event) {
-	text := eventText(item.Raw)
+	text := item.Text
 	if isUserMessage(item) {
 		injected := onlyInjectedSkill(text)
 		if !injected {
 			current.turn.UserPrompts++
+			current.turn.UserPromptTimes = append(current.turn.UserPromptTimes, item.Timestamp)
 		}
 		current.turn.SkillEvidence = append(current.turn.SkillEvidence, usage.DetectExplicitRequest(text, current.turn.SessionID, current.turn.ID, item.Timestamp, item.source())...)
-		if hasSelectedSkillInstructions(item.Raw) {
-			for _, skillText := range eventSkillTexts(item.Raw) {
+		if item.SelectedSkill {
+			for _, skillText := range item.SkillTexts {
 				current.turn.SkillEvidence = append(current.turn.SkillEvidence, usage.DetectSelectedSkillInstructions(skillText, current.turn.SessionID, current.turn.ID, item.Timestamp, item.source())...)
 			}
 		} else {
-			for _, skillText := range eventSkillTexts(item.Raw) {
+			for _, skillText := range item.SkillTexts {
 				current.turn.SkillEvidence = append(current.turn.SkillEvidence, usage.DetectInjectedSkillsWithMode(skillText, current.turn.SessionID, current.turn.ID, usage.ModeUnknown, item.Timestamp, item.source())...)
 			}
 		}
-		for _, value := range eventPayloadValues(item.Raw) {
+		for _, value := range item.PayloadValues {
 			current.turn.SkillEvidence = append(current.turn.SkillEvidence, usage.DetectRuntimeSkillItems(value, current.turn.SessionID, current.turn.ID, item.Timestamp, item.source())...)
 		}
 	}
@@ -529,7 +758,7 @@ func (a *assembler) observe(current *turnState, item event) {
 		}
 	}
 	if strings.Contains(compact(item.EventType), "skill") {
-		for _, name := range skillActivityNames(item.Raw) {
+		for _, name := range skillActivityNamesValues(item.PayloadValues) {
 			current.turn.SkillEvidence = append(current.turn.SkillEvidence, usage.NewSkillEvidence(current.turn.SessionID, current.turn.ID, name, usage.ModeExplicit, usage.MethodStructuredTool, usage.StateConfirmed, item.Timestamp, item.source()))
 		}
 	}
@@ -538,15 +767,25 @@ func (a *assembler) observe(current *turnState, item event) {
 func eventTools(item event, sessionID, turnID string) []usage.ToolObservation {
 	result := make([]usage.ToolObservation, 0)
 	seen := make(map[string]struct{})
-	for _, value := range eventPayloadValues(item.Raw) {
+	for _, value := range item.PayloadValues {
 		collectActivityTools(value, item, sessionID, turnID, &result, seen)
 	}
 	if isToolEvent(item) {
-		if observation, ok := normalizeToolMap(item.Raw, item, nil, sessionID, turnID); ok {
-			result = append(result, observation)
+		if topLevel := eventTopLevel(item); topLevel != nil {
+			if observation, ok := normalizeToolMap(topLevel, item, nil, sessionID, turnID); ok {
+				result = append(result, observation)
+			}
 		}
 	}
 	return result
+}
+
+func eventTopLevel(item event) map[string]any {
+	if len(item.PayloadValues) == 0 {
+		return nil
+	}
+	topLevel, _ := item.PayloadValues[0].(map[string]any)
+	return topLevel
 }
 
 func isExecTool(observation usage.ToolObservation) bool {
@@ -1000,7 +1239,7 @@ func isToolEvent(item event) bool {
 	}
 }
 
-func skillActivityNames(raw map[string]any) []string {
+func skillActivityNamesValues(values []any) []string {
 	result := make(map[string]struct{})
 	var visit func(any)
 	visit = func(value any) {
@@ -1023,7 +1262,7 @@ func skillActivityNames(raw map[string]any) []string {
 			}
 		}
 	}
-	for _, value := range eventPayloadValues(raw) {
+	for _, value := range values {
 		visit(value)
 	}
 	names := make([]string, 0, len(result))
@@ -1102,7 +1341,14 @@ func (item event) sessionID() string {
 }
 
 func (item event) turnID() string {
-	for _, value := range eventPayloadValues(item.Raw) {
+	if item.TurnIDValue != "" {
+		return item.TurnIDValue
+	}
+	return turnIDFromValues(item.PayloadValues)
+}
+
+func turnIDFromValues(values []any) string {
+	for _, value := range values {
 		if payload, ok := value.(map[string]any); ok {
 			if id := findString(payload, "turn_id", "turnId", "provider_turn_id", "providerTurnId", "task_id", "taskId", "interaction_id", "interactionId"); id != "" {
 				return id
@@ -1112,8 +1358,8 @@ func (item event) turnID() string {
 	return ""
 }
 
-func eventText(raw map[string]any) string {
-	for _, value := range eventPayloadValues(raw) {
+func eventTextValues(values []any) string {
+	for _, value := range values {
 		payload, ok := value.(map[string]any)
 		if !ok {
 			continue
@@ -1127,10 +1373,10 @@ func eventText(raw map[string]any) string {
 	return ""
 }
 
-func eventSkillTexts(raw map[string]any) []string {
+func eventSkillTextsValues(values []any) []string {
 	texts := make([]string, 0)
 	seen := make(map[string]struct{})
-	for _, value := range eventPayloadValues(raw) {
+	for _, value := range values {
 		payload, ok := value.(map[string]any)
 		if !ok {
 			continue
@@ -1150,8 +1396,8 @@ func eventSkillTexts(raw map[string]any) []string {
 	return texts
 }
 
-func hasSelectedSkillInstructions(raw map[string]any) bool {
-	for _, value := range eventPayloadValues(raw) {
+func hasSelectedSkillInstructionsValues(values []any) bool {
+	for _, value := range values {
 		if containsSelectedSkillInstructions(value) {
 			return true
 		}

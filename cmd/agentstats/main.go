@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/xkumiyu/agentstats/internal/aggregate"
+	"github.com/xkumiyu/agentstats/internal/cache"
 	"github.com/xkumiyu/agentstats/internal/codex"
 	ctxsource "github.com/xkumiyu/agentstats/internal/ctx"
 	"github.com/xkumiyu/agentstats/internal/output"
@@ -299,6 +300,7 @@ func runWithCtxLoader(args []string, stdout, stderr io.Writer, loadCtx ctxHistor
 	}
 
 	now := time.Now().UTC()
+	cacheDir, _ := cache.DefaultDir()
 	progress := newSpinner(stderr, !*jsonOutput && diagnostics.capabilities.IsTTY, diagnostics.capabilities.ColorsEnabled())
 	var (
 		turns        []usage.Turn
@@ -311,7 +313,7 @@ func runWithCtxLoader(args []string, stdout, stderr io.Writer, loadCtx ctxHistor
 	if selectedSource == usage.SourceCtx {
 		sourcePath = strings.TrimSpace(*ctxDataRoot)
 		stopProgress = progress.Start("Reading ctx history")
-		input, loadErr := loadCtx(*ctxDataRoot, ctxsource.IngestOptions{DataRoot: *ctxDataRoot, Days: *days, DaysSet: daysSet, Now: now})
+		input, loadErr := loadCtx(*ctxDataRoot, ctxsource.IngestOptions{DataRoot: *ctxDataRoot, Days: *days, DaysSet: daysSet, Now: now, CacheDir: cacheDir})
 		if loadErr != nil {
 			stopProgress()
 			diagnostics.errorf("read ctx history: %v", loadErr)
@@ -326,7 +328,7 @@ func runWithCtxLoader(args []string, stdout, stderr io.Writer, loadCtx ctxHistor
 		}
 		sourcePath = home
 		stopProgress = progress.Start("Reading Codex history")
-		input, loadErr := codex.Load(home, codex.IngestOptions{Days: *days, DaysSet: daysSet, Now: now})
+		input, loadErr := codex.Load(home, codex.IngestOptions{Days: *days, DaysSet: daysSet, Now: now, CacheDir: cacheDir})
 		if loadErr != nil {
 			stopProgress()
 			diagnostics.errorf("read Codex history %q: %v", home, loadErr)

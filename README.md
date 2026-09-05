@@ -112,6 +112,11 @@ the name is unused. Usage matching remains canonical-name based: if any selected
 ctx agent used a name, all inventory rows with that name are considered used.
 The inventory roots (`--root`) and history source (`--source`) are independent.
 
+## Cache
+
+Parsed results are cached in the OS-standard user cache directory to speed up
+subsequent runs.
+
 ## Data handling
 
 agentstats reads Codex history or ctx's public read-only event stream and never

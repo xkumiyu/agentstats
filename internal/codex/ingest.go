@@ -14,10 +14,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xkumiyu/agentstats/internal/cache"
 	"github.com/xkumiyu/agentstats/internal/usage"
 )
 
 const DefaultMaxLineBytes = 4 << 20
+
+const codexParserVersion = "codex-normalizer-v1"
 
 // ResolveHome applies the Codex home precedence rule.
 func ResolveHome(explicit string) (string, error) {
@@ -77,6 +80,9 @@ func Discover(home string) ([]string, error) {
 				return nil
 			}
 			clean := filepath.Clean(path)
+			if absolute, absErr := filepath.Abs(clean); absErr == nil {
+				clean = absolute
+			}
 			if _, ok := seen[clean]; !ok {
 				seen[clean] = struct{}{}
 				files = append(files, clean)
@@ -290,6 +296,7 @@ type IngestOptions struct {
 	Days         int
 	DaysSet      bool
 	Now          time.Time
+	CacheDir     string
 }
 
 type IngestResult struct {
@@ -336,6 +343,9 @@ func Stream(home string, opts IngestOptions, consume func(usage.Turn)) (sessions
 
 // Load is the collecting convenience wrapper around Stream.
 func Load(home string, opts IngestOptions) (IngestResult, error) {
+	if strings.TrimSpace(opts.CacheDir) != "" {
+		return loadCached(home, opts)
+	}
 	var result IngestResult
 	sessions, warnings, err := Stream(home, opts, func(turn usage.Turn) { result.Turns = append(result.Turns, turn) })
 	if err != nil {
@@ -343,6 +353,165 @@ func Load(home string, opts IngestOptions) (IngestResult, error) {
 	}
 	result.Sessions, result.Warnings = sessions, warnings
 	return result, nil
+}
+
+func loadCached(home string, opts IngestOptions) (IngestResult, error) {
+	filter := TimestampFilter{}
+	var err error
+	if opts.DaysSet || opts.Days != 0 {
+		filter, err = NewTimestampFilter(opts.Days, opts.Now)
+		if err != nil {
+			return IngestResult{}, err
+		}
+	}
+	files, err := Discover(home)
+	if err != nil {
+		return IngestResult{}, err
+	}
+	store := cache.New(opts.CacheDir)
+	var turns []usage.Turn
+	var warnings []usage.Warning
+	sessions := make(map[string]SessionMetadata)
+	for _, path := range files {
+		before, statErr := os.Stat(path)
+		if statErr != nil {
+			warnings = append(warnings, usage.Warning{Reason: "read_file", Path: path, Count: 1})
+			continue
+		}
+		revision := fileRevision(before)
+		data, hit, _ := store.Read("codex", path, revision, codexParserVersion)
+		var snapshot cache.Snapshot
+		var fileResult IngestResult
+		if hit {
+			if unmarshalErr := json.Unmarshal(data, &snapshot); unmarshalErr != nil {
+				hit = false
+			} else {
+				fileResult = resultFromSnapshot(snapshot)
+			}
+		}
+		if !hit {
+			var complete bool
+			snapshot, fileResult, complete = parseFileSnapshot(path, opts)
+			if complete {
+				if after, afterErr := os.Stat(path); afterErr == nil && fileRevision(after) == revision {
+					_ = store.Write("codex", path, revision, codexParserVersion, snapshot)
+				}
+			}
+		}
+		turns = append(turns, fileResult.Turns...)
+		for _, value := range fileResult.Sessions {
+			sessions[value.ID] = value
+		}
+		warnings = append(warnings, fileResult.Warnings...)
+	}
+	if !filter.cutoff.IsZero() {
+		filtered := turns[:0]
+		for _, turn := range turns {
+			if filteredTurn, ok := filterCodexTurn(turn, filter); ok {
+				filtered = append(filtered, filteredTurn)
+			}
+		}
+		turns = filtered
+	}
+	sessionIDs := make([]string, 0, len(sessions))
+	for id := range sessions {
+		sessionIDs = append(sessionIDs, id)
+	}
+	sort.Strings(sessionIDs)
+	resultSessions := make([]SessionMetadata, 0, len(sessionIDs))
+	for _, id := range sessionIDs {
+		resultSessions = append(resultSessions, sessions[id])
+	}
+	return IngestResult{Turns: turns, Sessions: resultSessions, Warnings: warnings}, nil
+}
+
+func filterCodexTurn(turn usage.Turn, filter TimestampFilter) (usage.Turn, bool) {
+	when := turn.EndedAt
+	if when.IsZero() {
+		when = turn.StartedAt
+	}
+	if !filter.Accept(when) {
+		return usage.Turn{}, false
+	}
+	filtered := turn
+	if len(turn.UserPromptTimes) > 0 {
+		filtered.UserPromptTimes = filtered.UserPromptTimes[:0]
+		for _, timestamp := range turn.UserPromptTimes {
+			if filter.Accept(timestamp) {
+				filtered.UserPromptTimes = append(filtered.UserPromptTimes, timestamp)
+			}
+		}
+		filtered.UserPrompts = len(filtered.UserPromptTimes)
+	}
+	filtered.ModelTools = filterCodexTools(turn.ModelTools, filter)
+	filtered.RuntimeTools = filterCodexTools(turn.RuntimeTools, filter)
+	filtered.SkillEvidence = filterCodexSkills(turn.SkillEvidence, filter)
+	return filtered, true
+}
+
+func filterCodexTools(values []usage.ToolObservation, filter TimestampFilter) []usage.ToolObservation {
+	filtered := values[:0]
+	for _, value := range values {
+		if filter.Accept(value.Timestamp) {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
+}
+
+func filterCodexSkills(values []usage.SkillEvidence, filter TimestampFilter) []usage.SkillEvidence {
+	filtered := values[:0]
+	for _, value := range values {
+		if filter.Accept(value.Timestamp) {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
+}
+
+func parseFileSnapshot(path string, opts IngestOptions) (cache.Snapshot, IngestResult, bool) {
+	collector := &WarningCollector{}
+	turns := make([]usage.Turn, 0)
+	a := newAssembler(TimestampFilter{}, collector, func(turn usage.Turn) { turns = append(turns, turn) })
+	err := DecodeFile(path, DecodeOptions{MaxLineBytes: opts.MaxLineBytes, Warnings: collector}, a.consume)
+	if err != nil {
+		collector.AddFile("read_file", path)
+	}
+	a.flush()
+	result := IngestResult{Turns: turns, Sessions: a.sessions(), Warnings: collector.Warnings()}
+	snapshot := cache.Snapshot{Warnings: result.Warnings}
+	for _, turn := range turns {
+		snapshot.Turns = append(snapshot.Turns, cache.TurnFromUsage(turn))
+	}
+	for _, session := range result.Sessions {
+		snapshot.Sessions = append(snapshot.Sessions, cache.Session{
+			ID:          session.ID,
+			ProjectPath: session.ProjectPath,
+			CLIVersion:  session.CLIVersion,
+			Source:      cache.SourceRefFromUsage(session.Source),
+		})
+	}
+	return snapshot, result, err == nil
+}
+
+func resultFromSnapshot(snapshot cache.Snapshot) IngestResult {
+	result := IngestResult{Warnings: append([]usage.Warning(nil), snapshot.Warnings...)}
+	for _, turn := range snapshot.Turns {
+		result.Turns = append(result.Turns, turn.Usage())
+	}
+	for _, session := range snapshot.Sessions {
+		result.Sessions = append(result.Sessions, SessionMetadata{
+			ID:          session.ID,
+			ProjectPath: session.ProjectPath,
+			CLIVersion:  session.CLIVersion,
+			Source:      session.Source.Usage(),
+		})
+	}
+	return result
+}
+
+func fileRevision(info os.FileInfo) string {
+	return fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano())
 }
 
 type assembler struct {
@@ -422,6 +591,7 @@ func (a *assembler) consume(env Envelope) {
 		cur := a.ensure(sid, id, env)
 		if !injected {
 			cur.turn.UserPrompts++
+			cur.turn.UserPromptTimes = append(cur.turn.UserPromptTimes, env.Timestamp)
 		}
 		cur.hasContent = true
 		a.touch(cur, env.Timestamp, false)

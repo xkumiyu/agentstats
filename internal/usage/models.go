@@ -103,17 +103,18 @@ const (
 
 // Turn is the bounded normalization unit for a conversation turn.
 type Turn struct {
-	SessionID     string            `json:"session_id"`
-	ID            string            `json:"id"`
-	Ordinal       int               `json:"ordinal"`
-	StartedAt     time.Time         `json:"started_at,omitempty"`
-	EndedAt       time.Time         `json:"ended_at,omitempty"`
-	Aborted       bool              `json:"aborted,omitempty"`
-	Source        SourceRef         `json:"source"`
-	UserPrompts   int               `json:"user_prompts,omitempty"`
-	ModelTools    []ToolObservation `json:"model_tools,omitempty"`
-	RuntimeTools  []ToolObservation `json:"runtime_tools,omitempty"`
-	SkillEvidence []SkillEvidence   `json:"skill_evidence,omitempty"`
+	SessionID       string            `json:"session_id"`
+	ID              string            `json:"id"`
+	Ordinal         int               `json:"ordinal"`
+	StartedAt       time.Time         `json:"started_at,omitempty"`
+	EndedAt         time.Time         `json:"ended_at,omitempty"`
+	Aborted         bool              `json:"aborted,omitempty"`
+	Source          SourceRef         `json:"source"`
+	UserPrompts     int               `json:"user_prompts,omitempty"`
+	UserPromptTimes []time.Time       `json:"-"`
+	ModelTools      []ToolObservation `json:"model_tools,omitempty"`
+	RuntimeTools    []ToolObservation `json:"runtime_tools,omitempty"`
+	SkillEvidence   []SkillEvidence   `json:"skill_evidence,omitempty"`
 }
 
 // ToolObservation is a model or runtime observation of one tool invocation.

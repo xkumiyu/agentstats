@@ -110,6 +110,10 @@ inventoryのidentityはcanonical skill nameと絶対物理PATHの組み合わせ
 使用していれば、その名前のinventory行はすべて使用済みとみなします。inventory root
 （`--root`）と履歴ソース（`--source`）は独立しています。
 
+## キャッシュ
+
+解析結果は、次回以降の実行を高速化するためOS標準のユーザーキャッシュ領域に保存されます。
+
 ## データの扱い
 
 Codexの履歴またはctxの公開された読み取り専用イベントストリームだけを読み取り、
