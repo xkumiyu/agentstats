@@ -1,13 +1,14 @@
 # agentstats
 
-agentstats is a command-line tool for inspecting Codex usage. It aggregates local history and reports session, tool, and skill usage.
+agentstats is a command-line tool for inspecting AI coding agent usage.
+It aggregates local history and reports session, tool, and skill usage.
 
 [日本語版 / Japanese](README.ja.md)
 
 > [!NOTE]
 > agentstats supports:
-> - Codex
-> - [ctx](https://github.com/ctxrs/ctx)
+> - Codex local history (default)
+> - [ctx](https://github.com/ctxrs/ctx) event stream
 
 ## Quick start
 
@@ -33,28 +34,80 @@ go install github.com/xkumiyu/agentstats/cmd/agentstats@latest
 
 ## Usage
 
+### Usage overview
+
+Show an overview of agent usage.
+
 ```sh
-agentstats stats   # Overall usage summary
-agentstats tools   # Usage by tool
-agentstats skills  # Usage by skill
+agentstats stats
 ```
 
-Use `--json` when machine-readable output is needed.
+```text
+USAGE OVERVIEW
+Source: Codex (~/.codex)
+Agents: Codex
+Period: 2026-01-01 to 2026-01-31
 
-### Choosing a history source
+Activity
+  Sessions                    123
+  Turns                       456
+  User Prompts                789
+  Tool Calls                1,234
 
-Codex is the default. Each invocation reads one source only; history from
-Codex and ctx is never combined. Use `--source ctx` for ctx history.
+Skill Usage
+  By turn                      42
+  By session                   24
 
-## Example output
+Token Usage
+  Total Tokens                3.16B
+    Input Tokens              3.14B
+      Cached Tokens           3.06B
+    Output Tokens             13.3M
+      Reasoning Tokens        6.40M
+```
 
-`agentstats tools`:
+For ctx sources, token usage is not available.
+
+### Skill usage
+
+Show which skills were used and how their use was detected.
+
+```sh
+agentstats skills --view mode
+```
+
+```text
+SKILL USAGE
+Source: Codex (~/.codex)
+Agents: Codex
+Period: 2026-01-01 to 2026-01-31
+Group by: turn
+Strict: false
+View: mode
+
+Skill                       Explicit  Implicit  Unknown  Total
+──────────────────────────────────────────────────────────────
+code-review                       5         1        0      6
+openspec-apply-change             2         1        0      3
+
+2 skills, 9 uses total
+```
+
+For more, see [Skill usage details](#skill-usage-details).
+
+### Tool usage
+
+Show calls, failures, and last-used times by canonical tool name.
+
+```sh
+agentstats tools
+```
 
 ```text
 TOOL USAGE
 Source: Codex (~/.codex)
 Agents: Codex
-Period: all time
+Period: 2026-01-01 to 2026-01-31
 Layer: effective
 
 Tool       Calls  Failures  Last Used
@@ -64,7 +117,19 @@ shell          42         0  2026-09-01 12:34 JST
 1 tool, 42 calls total
 ```
 
-## Understanding skill usage
+### Common options
+
+- `--source` selects the history source. Codex local history is the default;
+  use `--source ctx` for the ctx event stream. Each invocation reads one source
+  only.
+- `--days N` limits the report to the last N days.
+- `--from YYYY-MM-DD` and `--to YYYY-MM-DD` select an inclusive UTC calendar-date range; either option may be used alone. They cannot be combined with `--days`.
+- `Period` shows the date range of the data actually included in the aggregation.
+- `--json` emits machine-readable output.
+
+## Skill usage details
+
+### Skill usage fields
 
 `agentstats skills` reports the following fields:
 
@@ -85,32 +150,27 @@ Activation mode and evidence state are independent. A single usage can have evid
 Choose the Skill usage view with `--view`:
 
 ```sh
-agentstats skills --view mode
-agentstats skills --view state
-agentstats skills --view all
+agentstats skills --view compact  # Total only
+agentstats skills --view mode     # Activation mode
+agentstats skills --view state    # Evidence state
+agentstats skills --view all      # Both tables
 ```
 
-The default `--view auto` selects `compact`, `mode`, or `all` from the
-terminal width and reports it as `View: auto (selected: mode)` in the context
-lines. `mode` shows activation evidence, `state` shows evidence state and
-explicit `all` shows the two tables separately, including `Last Used`, so they
-remain readable on ordinary terminals.
+The default `--view auto` selects `compact`, `mode`, or `all` from the terminal width.
 
-## Finding unused skills
+### Finding unused skills
 
 Use `--unused` with `skills` to compare the selected history source with the
 installed skill inventory:
 
 ```sh
-agentstats skills --source ctx --ctx-data-root /path/to/ctx-data \
-  --unused --root /path/to/skills
+agentstats skills --unused
 ```
 
 Inventory identity is the canonical skill name plus its absolute physical path.
 Therefore, same-name skills at different paths are shown as separate rows when
 the name is unused. Usage matching remains canonical-name based: if any selected
 ctx agent used a name, all inventory rows with that name are considered used.
-The inventory roots (`--root`) and history source (`--source`) are independent.
 
 ## Cache
 

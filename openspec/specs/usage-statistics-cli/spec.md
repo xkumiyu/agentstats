@@ -7,17 +7,17 @@ Codexのsession・user prompt・Tool・Skill利用を、system logではなく�
 ## Requirements
 
 ### Requirement: overview統計を表示する
-`agentstats stats` は内容を示す `USAGE OVERVIEW` headingに続けて、入力source、対象Agent一覧、および期間をlabel付きcontext行として表示し、Sessions、User Prompts、Tool Calls、およびSkill Usesを視覚的に区切られたsummaryとして表示しなければならない（SHALL）。ctx sourceで複数Agentが対象になる場合、4つの集計値は選択scope内の全Agentを合算しなければならない（SHALL）。グローバルな実行ファイル名または製品名だけのtitle（例: `AGENTSTATS`、`agentstats stats`）をreportのheadingとして表示してはならない（MUST NOT）。Tool Callsはeffective Tool view、Skill Usesはturn単位で重複排除した全確認状態の利用を使用しなければならない（SHALL）。
+`agentstats stats` は内容を示す `USAGE OVERVIEW` headingに続けて、入力source、対象Agent一覧、および期間をlabel付きcontext行として表示し、Sessions、Turns、User Prompts、Tool Calls、Skill Uses (turn)、およびSkill Uses (session)を視覚的に区切られたsummaryとして表示しなければならない（SHALL）。ctx sourceで複数Agentが対象になる場合、6つの集計値は選択scope内の全Agentを合算しなければならない（SHALL）。グローバルな実行ファイル名または製品名だけのtitle（例: `AGENTSTATS`、`agentstats stats`）をreportのheadingとして表示してはならない（MUST NOT）。Tool Callsはeffective Tool view、Skill Uses (turn)はturn単位、Skill Uses (session)はsession単位で重複排除した全確認状態の利用を使用しなければならない（SHALL）。`stats` はSkill groupingを単一選択する `--group-by` optionを受け付けてはならない（MUST NOT）。
 
 #### Scenario: 履歴が存在する
 
 - **WHEN** userが有効なCodex履歴に対して `agentstats stats` を実行する
-- **THEN** システムは `USAGE OVERVIEW` heading、`Source: Codex (~/.codex)`、`Agents: Codex`、対象期間、および4つの集計値を既定のhuman-readable report形式でstdoutへ出力する
+- **THEN** システムは `USAGE OVERVIEW` heading、`Source: Codex (~/.codex)`、`Agents: Codex`、対象期間、および6つの集計値を既定のhuman-readable report形式でstdoutへ出力する
 
 #### Scenario: ctx sourceに複数Agentの履歴が存在する
 
 - **WHEN** userが `agentstats stats --source ctx` を実行し、ctxの選択scopeにCodexとOpenCodeの履歴がある
-- **THEN** システムは `Agents: Codex, OpenCode` を表示し、両AgentのSessions、User Prompts、Tool Calls、およびSkill Usesを合算して出力する
+- **THEN** システムは `Agents: Codex, OpenCode` を表示し、両AgentのSessions、Turns、User Prompts、Tool Calls、Skill Uses (turn)、およびSkill Uses (session)を合算して出力する
 
 #### Scenario: sourceと入力pathをcompactに表示する
 
@@ -119,6 +119,12 @@ Codexのsession・user prompt・Tool・Skill利用を、system logではなく�
 ### Requirement: human-readable report・JSONを提供する
 各統計commandは既定で、report内容を示すheading、入力source、対象Agent一覧、適用中のfilterをlabel付きcontext行、明確なsectionまたはcolumn heading、整列した値、および必要なfooterを持つhuman-readable static reportを出力しなければならない（SHALL）。human-readable reportの`Source`はsourceのdisplay nameを表示し、Codexでは有効なCodex homeを括弧内へ、ctxでは明示された`--ctx-data-root`だけを括弧内へ表示しなければならない（SHALL）。source pathは`Source`行へ含め、別の`History`または`Data root` context行を追加してはならない（MUST NOT）。複数Agentの表示はcanonical IDの決定的な順序に対応するdisplay nameをcomma区切りで示し、context行を中点で連結してはならない（MUST NOT）。countは桁区切りして右揃えにし、tableのLast Usedはtimezoneを含む簡潔なlocal日時で表示しなければならない（SHALL）。`--json` でmachine-readable出力へ切り替えられなければならず（SHALL）、JSONはhuman-readable reportと同じfilter・集計結果を表し、`source` とcanonical Agent IDの `agents` arrayを含まなければならない（SHALL）。既存の `agent` string fieldは後方互換のため保持し、単一Agentでは従来の値、複数Agentではcanonical IDを決定的順序でcomma区切りした値を格納しなければならない（SHALL）。JSONのfield順、timestamp形式、およびwarningをstdoutへ混入させない規則を維持しなければならない（SHALL）。
 
+`Period`は`last`、`from`、`through`などのoption入力をそのまま表示せず、実際に集計へ含まれたレコードの最初の日から最後の日までを、常に`YYYY-MM-DD to YYYY-MM-DD`形式で表示しなければならない（SHALL）。対象レコードがない場合は`no data`と表示しなければならない（SHALL）。
+
+指定された期間が実際に利用データの存在する期間と一致しない場合、human-readable reportは`info:`メッセージでその不一致を説明しなければならない（SHALL）。指定期間に利用がない場合も、empty-state messageを`info: No usage found for the selected period.`として表示しなければならない（SHALL）。これは入力errorやデータ欠損を示すwarningではない（MUST NOT）。
+
+Token usageをhuman-readable reportへ表示する場合、`Total Tokens`を親として`Input Tokens`と`Output Tokens`を階層表示し、`Cached Tokens`および非zeroの`Cache Write Input Tokens`をInputの内訳、`Reasoning Tokens`をOutputの内訳として表示しなければならない（SHALL）。token数は読みやすい`K`、`M`、`B`などのcompact表記を使用し、zeroの`Cache Write Input Tokens`はhuman-readable reportへ表示してはならない（MUST NOT）。JSONでは既存のtoken usage fieldと正確な値を保持しなければならない（SHALL）。
+
 #### Scenario: 既定reportを表示する
 
 - **WHEN** userが出力形式を指定せず任意の統計commandを実行する
@@ -138,6 +144,11 @@ Codexのsession・user prompt・Tool・Skill利用を、system logではなく�
 
 - **WHEN** userが任意の統計commandへ `--json` を指定する
 - **THEN** stdout全体は単独の有効なJSON documentとなり、`source`、`agents`、既存の集計fieldを含み、warningや進捗messageを含まない
+
+#### Scenario: token usageを階層とcompact表記で表示する
+
+- **WHEN** provider token usageが利用可能な`stats` reportをhuman-readable modeで表示し、cache writeがzeroである
+- **THEN** システムは`Total Tokens`、Input/Output、および各内訳を階層表示し、token数をcompact表記で出力し、`Cache Write Input Tokens`を表示しない。`--json`では正確なtoken usage fieldを保持する
 
 ### Requirement: terminal capabilityに応じて安全に装飾する
 既定の `--color auto` では、システムはstdoutがTTYであり `NO_COLOR` が設定されていない場合だけhuman-readable reportへANSI styleを適用しなければならない（SHALL）。`--color always` は明示的にstyleを有効化し、`--color never` は無効化しなければならず、この2つの強制modeは `NO_COLOR` より優先しなければならない（SHALL）。JSONにはoptionやterminal状態にかかわらずANSI escape sequenceを含めてはならない（MUST NOT）。色は補助表現に限り、label、text、数値、または配置なしに意味を伝えてはならない（MUST NOT）。colorが有効なhuman-readable reportでは、report headingを共通のaccent styleで目立たせ、table headerをheadingと区別できるstyleで表示しなければならない（SHALL）。通常のlabel・table row・count・Failures・Skillのevidence status値は既定色を基本とし、table cellをerror colorやwarning colorで強調してはならない（MUST NOT）。通常状態を示すためだけの一律なsuccess colorを全rowへ適用してはならない（MUST NOT）。

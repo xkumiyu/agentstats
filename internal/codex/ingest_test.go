@@ -133,6 +133,66 @@ func TestLoadAssemblesExplicitAndOrdinalTurnsAndFlushesAbort(t *testing.T) {
 	}
 }
 
+func TestLoadAggregatesLastTokenUsagePerTurn(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, "sessions", "one.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lines := []string{
+		`{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"s"}}`,
+		`{"timestamp":"2026-01-01T00:00:01Z","type":"user_message","payload":{"text":"hello"}}`,
+		`{"timestamp":"2026-01-01T00:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":70,"cache_write_input_tokens":2,"output_tokens":20,"reasoning_output_tokens":8,"total_tokens":120},"last_token_usage":{"input_tokens":10,"cached_input_tokens":7,"cache_write_input_tokens":1,"output_tokens":2,"reasoning_output_tokens":1,"total_tokens":12}}}}`,
+		`{"timestamp":"2026-01-01T00:00:03Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":110,"cache_write_input_tokens":4,"output_tokens":30,"reasoning_output_tokens":10,"total_tokens":190},"last_token_usage":{"input_tokens":20,"cached_input_tokens":11,"cache_write_input_tokens":3,"output_tokens":4,"reasoning_output_tokens":2,"total_tokens":24}}}}`,
+		`{"timestamp":"2026-01-01T00:00:04Z","type":"task_complete","payload":{}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Load(home, IngestOptions{Now: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Turns) != 1 || result.Turns[0].TokenUsage == nil {
+		t.Fatalf("turns = %#v", result.Turns)
+	}
+	got := *result.Turns[0].TokenUsage
+	want := usage.TokenUsage{InputTokens: 30, CachedInputTokens: 18, CacheWriteInputTokens: 4, OutputTokens: 6, ReasoningOutputTokens: 3, TotalTokens: 36}
+	if got != want {
+		t.Fatalf("token usage = %#v, want %#v", got, want)
+	}
+}
+
+func TestLoadDifferencesCumulativeTokenUsageWhenLastUsageIsUnavailable(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, "sessions", "one.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lines := []string{
+		`{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"s"}}`,
+		`{"timestamp":"2026-01-01T00:00:01Z","type":"user_message","payload":{"text":"hello"}}`,
+		`{"timestamp":"2026-01-01T00:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}}`,
+		`{"timestamp":"2026-01-01T00:00:03Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":30,"output_tokens":5,"total_tokens":35}}}}`,
+		`{"timestamp":"2026-01-01T00:00:04Z","type":"task_complete","payload":{}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Load(home, IngestOptions{Now: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Turns) != 1 || result.Turns[0].TokenUsage == nil {
+		t.Fatalf("turns = %#v", result.Turns)
+	}
+	want := usage.TokenUsage{InputTokens: 30, OutputTokens: 5, TotalTokens: 35}
+	if got := *result.Turns[0].TokenUsage; got != want {
+		t.Fatalf("cumulative token usage = %#v, want %#v", got, want)
+	}
+}
+
 func TestTimestampFilterIsCutoffInclusiveAndRejectsNegative(t *testing.T) {
 	now := time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC)
 	filter, err := NewTimestampFilter(2, now)
@@ -147,6 +207,62 @@ func TestTimestampFilterIsCutoffInclusiveAndRejectsNegative(t *testing.T) {
 	}
 	if _, err := NewTimestampFilter(0, now); err == nil {
 		t.Fatal("zero days should fail when a filter is requested")
+	}
+}
+
+func TestLoadFiltersByDateRange(t *testing.T) {
+	home := t.TempDir()
+	sessionsDir := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeSession := func(name, id, timestamp string) {
+		t.Helper()
+		lines := []string{
+			`{"timestamp":"` + timestamp + `","type":"session_meta","payload":{"id":"` + id + `"}}`,
+			`{"timestamp":"` + timestamp + `","type":"user_message","payload":{"text":"hello"}}`,
+			`{"timestamp":"` + timestamp + `","type":"task_complete","payload":{}}`,
+		}
+		if err := os.WriteFile(filepath.Join(sessionsDir, name), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeSession("old.jsonl", "old", "2026-01-01T12:00:00Z")
+	writeSession("selected.jsonl", "selected", "2026-01-02T12:00:00Z")
+	writeSession("new.jsonl", "new", "2026-01-03T00:00:00Z")
+
+	result, err := Load(home, IngestOptions{
+		From: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC),
+		Now:  time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Turns) != 1 || result.Turns[0].SessionID != "selected" || len(result.Sessions) != 1 || result.Sessions[0].ID != "selected" {
+		t.Fatalf("date range result = %#v", result)
+	}
+
+	toOnly, err := Load(home, IngestOptions{
+		To:  time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC),
+		Now: time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(toOnly.Turns) != 2 || len(toOnly.Sessions) != 2 {
+		t.Fatalf("upper-only date range result = %#v", toOnly)
+	}
+
+	fromOnly, err := Load(home, IngestOptions{
+		From: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		Now:  time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fromOnly.Turns) != 2 || len(fromOnly.Sessions) != 2 {
+		t.Fatalf("lower-only date range result = %#v", fromOnly)
 	}
 }
 

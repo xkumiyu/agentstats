@@ -48,7 +48,91 @@ func TestLoadUsesCompleteGenerationCacheAndLocalDaysFilter(t *testing.T) {
 	}
 }
 
-func TestLoadRefetchesWhenGenerationChangesAndDoesNotCacheRangeQuery(t *testing.T) {
+func TestLoadReportsCacheActivity(t *testing.T) {
+	data := strings.Join([]string{
+		eventLine(t, "old", "codex", "session", "message", "user", "2026-01-01T00:00:00Z", "old", nil),
+		completionLine(t, "generation-1", "", true),
+	}, "\n") + "\n"
+	cacheDir := t.TempDir()
+	runner := func(args []string) (CommandResult, error) {
+		if containsPair(args, "--limit", "1") {
+			return CommandResult{Stdout: []byte(completionLine(t, "generation-1", "", true) + "\n")}, nil
+		}
+		return CommandResult{Stdout: []byte(data)}, nil
+	}
+	now := time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC)
+	var cold []string
+	if _, err := Load("/tmp/ctx-diagnostics", IngestOptions{
+		DataRoot: "/tmp/ctx-diagnostics",
+		Now:      now,
+		CacheDir: cacheDir,
+		Runner:   runner,
+		Diagnostic: func(message string) {
+			cold = append(cold, message)
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"ctx cache: checking generation",
+		"ctx cache: miss; reading source",
+		"ctx source: reading full event stream",
+		"ctx cache: stored complete generation",
+	} {
+		if !containsString(cold, want) {
+			t.Errorf("cold diagnostics missing %q: %v", want, cold)
+		}
+	}
+
+	var warm []string
+	if _, err := Load("/tmp/ctx-diagnostics", IngestOptions{
+		DataRoot: "/tmp/ctx-diagnostics",
+		Days:     1,
+		DaysSet:  true,
+		Now:      now,
+		CacheDir: cacheDir,
+		Runner:   runner,
+		Diagnostic: func(message string) {
+			warm = append(warm, message)
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"ctx cache: checking generation",
+		"ctx cache: hit; applying selected period locally",
+	} {
+		if !containsString(warm, want) {
+			t.Errorf("warm diagnostics missing %q: %v", want, warm)
+		}
+	}
+
+	var disabled []string
+	if _, err := Load("/tmp/ctx-diagnostics-disabled", IngestOptions{
+		DataRoot: "/tmp/ctx-diagnostics-disabled",
+		Now:      now,
+		Runner:   runner,
+		Diagnostic: func(message string) {
+			disabled = append(disabled, message)
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !containsString(disabled, "ctx cache: disabled; reading source") {
+		t.Errorf("disabled-cache diagnostic missing: %v", disabled)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestLoadRefetchesWhenGenerationChangesAndWarmsRangeCache(t *testing.T) {
 	cacheDir := t.TempDir()
 	var generation string
 	var calls [][]string
@@ -77,14 +161,18 @@ func TestLoadRefetchesWhenGenerationChangesAndDoesNotCacheRangeQuery(t *testing.
 	}
 
 	calls = nil
-	if _, err := Load("/tmp/ctx-range", IngestOptions{DataRoot: "/tmp/ctx-range", Days: 1, DaysSet: true, Now: time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC), CacheDir: cacheDir, Runner: runner}); err != nil {
+	rangeResult, err := Load("/tmp/ctx-range", IngestOptions{DataRoot: "/tmp/ctx-range", Days: 1, DaysSet: true, Now: time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC), CacheDir: cacheDir, Runner: runner})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) != 2 || !containsPair(calls[1], "--since", "2026-01-02T00:00:00Z") {
-		t.Fatalf("range query calls = %#v", calls)
+	if len(rangeResult.Turns) != 1 || rangeResult.Turns[0].UserPrompts != 1 {
+		t.Fatalf("range result = %#v", rangeResult)
 	}
-	if _, hit, err := cache.New(cacheDir).Read("ctx", "/tmp/ctx-range", "generation-2", ctxParserVersion); err != nil || hit {
-		t.Fatalf("range query unexpectedly populated complete cache: hit=%v err=%v", hit, err)
+	if len(calls) != 2 || containsPair(calls[1], "--since", "2026-01-02T00:00:00Z") {
+		t.Fatalf("range cache-warming calls = %#v", calls)
+	}
+	if _, hit, err := cache.New(cacheDir).Read("ctx", "/tmp/ctx-range", "generation-2", ctxParserVersion); err != nil || !hit {
+		t.Fatalf("range query did not populate complete cache: hit=%v err=%v", hit, err)
 	}
 }
 

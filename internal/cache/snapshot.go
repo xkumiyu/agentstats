@@ -27,18 +27,20 @@ type Session struct {
 }
 
 type Turn struct {
-	SessionID     string          `json:"session_id"`
-	ID            string          `json:"id"`
-	Ordinal       int             `json:"ordinal"`
-	StartedAt     time.Time       `json:"started_at,omitempty"`
-	EndedAt       time.Time       `json:"ended_at,omitempty"`
-	Aborted       bool            `json:"aborted,omitempty"`
-	Source        SourceRef       `json:"source"`
-	UserPrompts   int             `json:"user_prompts,omitempty"`
-	PromptTimes   []time.Time     `json:"prompt_times,omitempty"`
-	ModelTools    []tool          `json:"model_tools,omitempty"`
-	RuntimeTools  []tool          `json:"runtime_tools,omitempty"`
-	SkillEvidence []skillEvidence `json:"skill_evidence,omitempty"`
+	SessionID        string                  `json:"session_id"`
+	ID               string                  `json:"id"`
+	Ordinal          int                     `json:"ordinal"`
+	StartedAt        time.Time               `json:"started_at,omitempty"`
+	EndedAt          time.Time               `json:"ended_at,omitempty"`
+	Aborted          bool                    `json:"aborted,omitempty"`
+	Source           SourceRef               `json:"source"`
+	UserPrompts      int                     `json:"user_prompts,omitempty"`
+	PromptTimes      []time.Time             `json:"prompt_times,omitempty"`
+	ModelTools       []tool                  `json:"model_tools,omitempty"`
+	RuntimeTools     []tool                  `json:"runtime_tools,omitempty"`
+	SkillEvidence    []skillEvidence         `json:"skill_evidence,omitempty"`
+	TokenUsage       *usage.TokenUsage       `json:"token_usage,omitempty"`
+	TokenUsageEvents []usage.TokenUsageEvent `json:"token_usage_events,omitempty"`
 }
 
 type tool struct {
@@ -78,6 +80,11 @@ func TurnFromUsage(value usage.Turn) Turn {
 		UserPrompts: value.UserPrompts,
 		PromptTimes: append([]time.Time(nil), value.UserPromptTimes...),
 	}
+	if value.TokenUsage != nil {
+		copy := *value.TokenUsage
+		result.TokenUsage = &copy
+	}
+	result.TokenUsageEvents = append([]usage.TokenUsageEvent(nil), value.TokenUsageEvents...)
 	result.ModelTools = toolsFromUsage(value.ModelTools)
 	result.RuntimeTools = toolsFromUsage(value.RuntimeTools)
 	result.SkillEvidence = skillsFromUsage(value.SkillEvidence)
@@ -99,6 +106,11 @@ func (value Turn) Usage() usage.Turn {
 		RuntimeTools:    make([]usage.ToolObservation, 0, len(value.RuntimeTools)),
 		SkillEvidence:   make([]usage.SkillEvidence, 0, len(value.SkillEvidence)),
 	}
+	if value.TokenUsage != nil {
+		copy := *value.TokenUsage
+		result.TokenUsage = &copy
+	}
+	result.TokenUsageEvents = append([]usage.TokenUsageEvent(nil), value.TokenUsageEvents...)
 	for _, item := range value.ModelTools {
 		result.ModelTools = append(result.ModelTools, item.Usage())
 	}

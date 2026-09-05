@@ -23,7 +23,7 @@ func TestBuildOverviewAndLayerAggregation(t *testing.T) {
 	}
 	input := Input{Turns: []usage.Turn{turn}, SessionCount: 1}
 	report := BuildOverview(input)
-	if report.Overview.Sessions != 1 || report.Overview.UserPrompts != 1 || report.Overview.ToolCalls != 2 || report.Overview.SkillUses != 1 {
+	if report.Overview.Sessions != 1 || report.Overview.Turns != 1 || report.Overview.UserPrompts != 1 || report.Overview.ToolCalls != 2 || report.Overview.SkillUsesTurn != 1 || report.Overview.SkillUsesSession != 1 {
 		t.Fatalf("overview = %#v", report.Overview)
 	}
 	if len(report.Tools) != 2 || report.Tools[0].Name != "shell" || report.Tools[0].Failures != 1 {
@@ -36,6 +36,19 @@ func TestBuildOverviewAndLayerAggregation(t *testing.T) {
 	strict := Skills(input, true)
 	if len(strict) != 1 || strict[0].Total != 1 || strict[0].Confirmed != 1 {
 		t.Fatalf("strict rows = %#v", strict)
+	}
+}
+
+func TestBuildOverviewSumsTokenUsage(t *testing.T) {
+	first := usage.TokenUsage{InputTokens: 10, CachedInputTokens: 4, CacheWriteInputTokens: 1, OutputTokens: 3, ReasoningOutputTokens: 2, TotalTokens: 13}
+	second := usage.TokenUsage{InputTokens: 20, CachedInputTokens: 8, CacheWriteInputTokens: 2, OutputTokens: 5, ReasoningOutputTokens: 1, TotalTokens: 25}
+	report := BuildOverview(Input{Turns: []usage.Turn{
+		{SessionID: "s", TokenUsage: &first},
+		{SessionID: "s", TokenUsage: &second},
+	}})
+	want := usage.TokenUsage{InputTokens: 30, CachedInputTokens: 12, CacheWriteInputTokens: 3, OutputTokens: 8, ReasoningOutputTokens: 3, TotalTokens: 38}
+	if !report.Overview.TokenUsageAvailable || report.Overview.TokenUsage != want {
+		t.Fatalf("token usage = %#v, want %#v", report.Overview.TokenUsage, want)
 	}
 }
 
@@ -71,7 +84,7 @@ func TestAggregateCombinesCanonicalNamesAcrossAgents(t *testing.T) {
 		},
 	}
 	report := BuildOverview(Input{Turns: turns})
-	if report.Overview.Sessions != 2 || report.Overview.ToolCalls != 2 || report.Overview.SkillUses != 2 {
+	if report.Overview.Sessions != 2 || report.Overview.Turns != 2 || report.Overview.ToolCalls != 2 || report.Overview.SkillUsesTurn != 2 || report.Overview.SkillUsesSession != 2 {
 		t.Fatalf("overview = %#v", report.Overview)
 	}
 	if len(report.Tools) != 1 || report.Tools[0].Name != "shell" || report.Tools[0].Calls != 2 || report.Tools[0].Failures != 1 {
@@ -121,6 +134,11 @@ func TestSkillsCountEachSkillOncePerTurn(t *testing.T) {
 	row := rows[0]
 	if row.Total != 2 || row.Implicit != 1 || row.Explicit != 1 {
 		t.Fatalf("skill count = %#v", row)
+	}
+
+	report := BuildOverview(Input{Turns: turns})
+	if report.Overview.Turns != 2 || report.Overview.SkillUsesTurn != 2 || report.Overview.SkillUsesSession != 1 {
+		t.Fatalf("overview grouping = %#v", report.Overview)
 	}
 }
 

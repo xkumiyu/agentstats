@@ -80,7 +80,7 @@ func TestRunCommandsAndMachineOutput(t *testing.T) {
 	if code := run([]string{"stats", "--codex-home", home, "--color", "never"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("stats exit=%d stderr=%s", code, stderr.String())
 	}
-	for _, want := range []string{"USAGE OVERVIEW", "Source: Codex (" + home + ")", "Agents: Codex", "Sessions", "User Prompts", "Tool Calls", "Skill Uses"} {
+	for _, want := range []string{"USAGE OVERVIEW", "Source: Codex (" + home + ")", "Agents: Codex", "Activity", "Sessions", "Turns", "User Prompts", "Tool Calls", "Skill Usage", "By turn", "By session", "Token Usage"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("stats missing %q: %s", want, stdout.String())
 		}
@@ -163,13 +163,15 @@ func TestRunCommandsAndMachineOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	var statsSkills struct {
-		SkillUses int `json:"skill_uses"`
+		Turns            int `json:"turns"`
+		SkillUsesTurn    int `json:"skill_uses_turn"`
+		SkillUsesSession int `json:"skill_uses_session"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &statsSkills); err != nil {
 		t.Fatal(err)
 	}
-	if skillTotal != statsSkills.SkillUses {
-		t.Fatalf("overview/skills mismatch: %d != %d", statsSkills.SkillUses, skillTotal)
+	if statsSkills.Turns != 2 || skillTotal != statsSkills.SkillUsesTurn || statsSkills.SkillUsesSession > statsSkills.SkillUsesTurn {
+		t.Fatalf("overview/skills mismatch: turns=%d turn=%d session=%d skills=%d", statsSkills.Turns, statsSkills.SkillUsesTurn, statsSkills.SkillUsesSession, skillTotal)
 	}
 }
 
@@ -202,6 +204,8 @@ func TestRunValidatesExclusiveHistorySources(t *testing.T) {
 		{name: "invalid source", args: []string{"stats", "--source", "sqlite"}, want: "invalid --source"},
 		{name: "codex option for ctx", args: []string{"stats", "--source", "ctx", "--codex-home", root}, want: "--codex-home is only valid for codex"},
 		{name: "ctx option for codex", args: []string{"stats", "--source", "codex", "--ctx-data-root", root}, want: "--ctx-data-root is only valid for ctx"},
+		{name: "days and range", args: []string{"stats", "--days", "1", "--from", "2026-01-01"}, want: "cannot be combined"},
+		{name: "reversed range", args: []string{"stats", "--from", "2026-01-02", "--to", "2026-01-01"}, want: "must not be after"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -210,6 +214,142 @@ func TestRunValidatesExclusiveHistorySources(t *testing.T) {
 				t.Fatalf("exit=%d stdout=%q stderr=%q, want %q", code, stdout.String(), stderr.String(), tt.want)
 			}
 		})
+	}
+}
+
+func TestRunDateRangeFiltersCodexHistory(t *testing.T) {
+	home := t.TempDir()
+	sessionsDir := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeSession := func(name, id, timestamp string) {
+		t.Helper()
+		lines := []string{
+			`{"timestamp":"` + timestamp + `","type":"session_meta","payload":{"id":"` + id + `"}}`,
+			`{"timestamp":"` + timestamp + `","type":"user_message","payload":{"text":"hello"}}`,
+			`{"timestamp":"` + timestamp + `","type":"task_complete","payload":{}}`,
+		}
+		if err := os.WriteFile(filepath.Join(sessionsDir, name), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeSession("old.jsonl", "old", "2026-01-01T23:59:59Z")
+	writeSession("selected.jsonl", "selected", "2026-01-02T12:00:00Z")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"stats", "--codex-home", home, "--from", "2026-01-02", "--to", "2026-01-02", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	var value struct {
+		Period   string `json:"period"`
+		Sessions int    `json:"sessions"`
+		Turns    int    `json:"turns"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	if value.Period != "2026-01-02 to 2026-01-02" || value.Sessions != 1 || value.Turns != 1 {
+		t.Fatalf("date range stats = %#v", value)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"stats", "--codex-home", home, "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("all-time stats exit=%d stderr=%s", code, stderr.String())
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	if value.Period != "2026-01-01 to 2026-01-02" {
+		t.Fatalf("all-time period = %q", value.Period)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"stats", "--codex-home", home, "--from", "2026-01-02", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("open-start date range exit=%d stderr=%s", code, stderr.String())
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	if value.Period != "2026-01-02 to 2026-01-02" {
+		t.Fatalf("open-start date range period = %q", value.Period)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"stats", "--codex-home", home, "--from", "2025-12-01", "--to", "2026-01-02", "--color", "never"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("partial date range exit=%d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "info: selected period starts before the first usage record (2026-01-01)") {
+		t.Fatalf("partial date range info = %q", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"stats", "--codex-home", home, "--to", "2026-01-02", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("open-end date range exit=%d stderr=%s", code, stderr.String())
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	if value.Period != "2026-01-01 to 2026-01-02" {
+		t.Fatalf("open-end date range period = %q", value.Period)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"stats", "--codex-home", home, "--from", "2027-01-01", "--color", "never"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("empty date range exit=%d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "info: No usage found for the selected period.") {
+		t.Fatalf("empty date range info = %q", stdout.String())
+	}
+}
+
+func TestFormatPeriodUsesActualTurnRange(t *testing.T) {
+	turns := []usage.Turn{
+		{
+			StartedAt: time.Date(2026, 1, 2, 23, 0, 0, 0, time.UTC),
+			EndedAt:   time.Date(2026, 1, 3, 1, 0, 0, 0, time.UTC),
+		},
+		{
+			StartedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+			EndedAt:   time.Date(2026, 1, 1, 13, 0, 0, 0, time.UTC),
+		},
+	}
+	if got := formatPeriod(turns); got != "2026-01-01 to 2026-01-03" {
+		t.Fatalf("formatPeriod() = %q, want actual turn range", got)
+	}
+	if got := formatPeriod(nil); got != "no data" {
+		t.Fatalf("formatPeriod(empty) = %q, want no data", got)
+	}
+}
+
+func TestFormatPeriodInfoDescribesRequestedRangeMismatch(t *testing.T) {
+	turns := []usage.Turn{{
+		StartedAt: time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC),
+		EndedAt:   time.Date(2026, 2, 1, 13, 0, 0, 0, time.UTC),
+	}}
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	if got := formatPeriodInfo(turns, false, 0, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 2, 2, 0, 0, 0, 0, time.UTC), now); got != "selected period starts before the first usage record (2026-02-01)" {
+		t.Fatalf("start mismatch info = %q", got)
+	}
+	if got := formatPeriodInfo(turns, false, 0, time.Time{}, time.Date(2026, 9, 6, 0, 0, 0, 0, time.UTC), now); got != "selected period ends after the last usage record (2026-02-01)" {
+		t.Fatalf("end mismatch info = %q", got)
+	}
+	if got := formatPeriodInfo(turns, false, 0, time.Time{}, time.Time{}, now); got != "" {
+		t.Fatalf("unfiltered period info = %q, want empty", got)
+	}
+	if got := formatPeriodInfo(nil, true, 30, time.Time{}, time.Time{}, now); got != "" {
+		t.Fatalf("empty period info = %q, want empty", got)
 	}
 }
 
@@ -246,18 +386,20 @@ func TestRunCtxSourceAggregatesAgentsAndPassesDataRoot(t *testing.T) {
 		t.Fatalf("ctx stats exit=%d stderr=%s", code, stderr.String())
 	}
 	var stats struct {
-		Source      string   `json:"source"`
-		Agents      []string `json:"agents"`
-		Agent       string   `json:"agent"`
-		Sessions    int      `json:"sessions"`
-		UserPrompts int      `json:"user_prompts"`
-		ToolCalls   int      `json:"tool_calls"`
-		SkillUses   int      `json:"skill_uses"`
+		Source           string   `json:"source"`
+		Agents           []string `json:"agents"`
+		Agent            string   `json:"agent"`
+		Sessions         int      `json:"sessions"`
+		Turns            int      `json:"turns"`
+		UserPrompts      int      `json:"user_prompts"`
+		ToolCalls        int      `json:"tool_calls"`
+		SkillUsesTurn    int      `json:"skill_uses_turn"`
+		SkillUsesSession int      `json:"skill_uses_session"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &stats); err != nil {
 		t.Fatal(err)
 	}
-	if stats.Source != "ctx" || strings.Join(stats.Agents, ",") != "codex,opencode" || stats.Agent != "codex,opencode" || stats.Sessions != 2 || stats.UserPrompts != 2 || stats.ToolCalls != 2 || stats.SkillUses != 2 {
+	if stats.Source != "ctx" || strings.Join(stats.Agents, ",") != "codex,opencode" || stats.Agent != "codex,opencode" || stats.Sessions != 2 || stats.Turns != 2 || stats.UserPrompts != 2 || stats.ToolCalls != 2 || stats.SkillUsesTurn != 2 || stats.SkillUsesSession != 2 {
 		t.Fatalf("ctx stats = %#v", stats)
 	}
 
@@ -294,6 +436,28 @@ func TestRunCtxSourceAggregatesAgentsAndPassesDataRoot(t *testing.T) {
 	}
 	if len(skillsValue.Rows) != 1 || skillsValue.Rows[0].Name != "review" || skillsValue.Rows[0].Total != 2 {
 		t.Fatalf("ctx skills = %#v", skillsValue)
+	}
+}
+
+func TestRunCtxVerboseReportsSourceDiagnosticsOnStderr(t *testing.T) {
+	loader := func(string, ctxsource.IngestOptions) (ctxsource.IngestResult, error) {
+		return ctxsource.IngestResult{}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runWithCtxLoader([]string{"stats", "--source", "ctx", "--verbose", "--json"}, &stdout, &stderr, func(root string, options ctxsource.IngestOptions) (ctxsource.IngestResult, error) {
+		if options.Diagnostic == nil {
+			t.Fatal("ctx diagnostic callback is nil in verbose mode")
+		}
+		options.Diagnostic("ctx cache: hit; using complete cached history")
+		return loader(root, options)
+	}); code != 0 {
+		t.Fatalf("ctx verbose exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "debug: ctx cache: hit; using complete cached history") {
+		t.Fatalf("ctx cache diagnostic missing from stderr: %q", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "ctx cache:") || strings.Contains(stdout.String(), "info:") {
+		t.Fatalf("ctx cache diagnostic leaked into stdout: %q", stdout.String())
 	}
 }
 
@@ -369,7 +533,7 @@ func TestRunHelpDocumentsHistorySourceOptions(t *testing.T) {
 	if code := run([]string{"stats", "--help"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("help exit=%d stderr=%s", code, stderr.String())
 	}
-	for _, want := range []string{"--source SOURCE", "codex or ctx", "--codex-home PATH", "--ctx-data-root PATH"} {
+	for _, want := range []string{"--source SOURCE", "codex or ctx", "--days N", "--from DATE", "--to DATE", "--codex-home PATH", "--ctx-data-root PATH", "input and cache diagnostic details"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("help missing %q: %s", want, stdout.String())
 		}
@@ -400,7 +564,7 @@ func TestRunHelpIsScopedToCommand(t *testing.T) {
 		want    []string
 		omit    []string
 	}{
-		{command: "stats", want: []string{"Usage: agentstats stats [options]", "--days", "--group-by"}, omit: []string{"--layer", "--strict"}},
+		{command: "stats", want: []string{"Usage: agentstats stats [options]", "--days"}, omit: []string{"--layer", "--strict", "--group-by"}},
 		{command: "tools", want: []string{"Usage: agentstats tools [options]", "--days", "--layer"}, omit: []string{"--group-by", "--strict"}},
 		{command: "skills", want: []string{"Usage: agentstats skills [options]", "--days", "--group-by", "--strict", "--unused", "--root", "--view"}, omit: []string{"--layer"}},
 	} {
@@ -435,7 +599,6 @@ func TestRunHelpDocumentsDefaults(t *testing.T) {
 			want: []string{
 				"--days N          Include the last N days (N >= 1; default: all time)",
 				"--color MODE      auto, always, or never (default: auto; human report only)",
-				"--group-by UNIT   turn or session (default: turn)",
 			},
 		},
 		{
@@ -543,18 +706,19 @@ func TestRunSkillsSupportsSessionGrouping(t *testing.T) {
 
 	stdout.Reset()
 	stderr.Reset()
-	if code := run([]string{"stats", "--codex-home", home, "--json", "--group-by", "session"}, &stdout, &stderr); code != 0 {
-		t.Fatalf("stats session grouping exit=%d stderr=%s", code, stderr.String())
+	if code := run([]string{"stats", "--codex-home", home, "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("stats overview grouping exit=%d stderr=%s", code, stderr.String())
 	}
 	var statsValue struct {
-		GroupBy   string `json:"group_by"`
-		SkillUses int    `json:"skill_uses"`
+		Turns            int `json:"turns"`
+		SkillUsesTurn    int `json:"skill_uses_turn"`
+		SkillUsesSession int `json:"skill_uses_session"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &statsValue); err != nil {
 		t.Fatal(err)
 	}
-	if statsValue.GroupBy != "session" || statsValue.SkillUses != 2 {
-		t.Fatalf("stats session grouping = %#v", statsValue)
+	if statsValue.Turns != 3 || statsValue.SkillUsesTurn != 3 || statsValue.SkillUsesSession != 2 {
+		t.Fatalf("stats grouping = %#v", statsValue)
 	}
 }
 
@@ -787,8 +951,13 @@ func TestRunRejectsInvalidArguments(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := run([]string{"tools", "--group-by", "session"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "only valid for stats or skills") {
+	if code := run([]string{"tools", "--group-by", "session"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "only valid for skills") {
 		t.Fatalf("tools group-by exit=%d stderr=%s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"stats", "--group-by", "session"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "only valid for skills") {
+		t.Fatalf("stats group-by exit=%d stderr=%s", code, stderr.String())
 	}
 	stdout.Reset()
 	stderr.Reset()

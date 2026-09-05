@@ -101,20 +101,64 @@ const (
 	StatusUnknown ToolStatus = "unknown"
 )
 
+// TokenUsage is the provider-reported token usage for one or more model
+// responses within a turn.
+type TokenUsage struct {
+	InputTokens           int64 `json:"input_tokens,omitempty"`
+	CachedInputTokens     int64 `json:"cached_input_tokens,omitempty"`
+	CacheWriteInputTokens int64 `json:"cache_write_input_tokens,omitempty"`
+	OutputTokens          int64 `json:"output_tokens,omitempty"`
+	ReasoningOutputTokens int64 `json:"reasoning_output_tokens,omitempty"`
+	TotalTokens           int64 `json:"total_tokens,omitempty"`
+}
+
+func (usage *TokenUsage) Add(value TokenUsage) {
+	if usage == nil {
+		return
+	}
+	usage.InputTokens += value.InputTokens
+	usage.CachedInputTokens += value.CachedInputTokens
+	usage.CacheWriteInputTokens += value.CacheWriteInputTokens
+	usage.OutputTokens += value.OutputTokens
+	usage.ReasoningOutputTokens += value.ReasoningOutputTokens
+	usage.TotalTokens += value.TotalTokens
+}
+
+// TokenUsageEvent keeps the timestamp needed to apply period filters after a
+// turn has been written to the cache.
+type TokenUsageEvent struct {
+	Timestamp time.Time  `json:"timestamp"`
+	Usage     TokenUsage `json:"usage"`
+}
+
 // Turn is the bounded normalization unit for a conversation turn.
 type Turn struct {
-	SessionID       string            `json:"session_id"`
-	ID              string            `json:"id"`
-	Ordinal         int               `json:"ordinal"`
-	StartedAt       time.Time         `json:"started_at,omitempty"`
-	EndedAt         time.Time         `json:"ended_at,omitempty"`
-	Aborted         bool              `json:"aborted,omitempty"`
-	Source          SourceRef         `json:"source"`
-	UserPrompts     int               `json:"user_prompts,omitempty"`
-	UserPromptTimes []time.Time       `json:"-"`
-	ModelTools      []ToolObservation `json:"model_tools,omitempty"`
-	RuntimeTools    []ToolObservation `json:"runtime_tools,omitempty"`
-	SkillEvidence   []SkillEvidence   `json:"skill_evidence,omitempty"`
+	SessionID        string            `json:"session_id"`
+	ID               string            `json:"id"`
+	Ordinal          int               `json:"ordinal"`
+	StartedAt        time.Time         `json:"started_at,omitempty"`
+	EndedAt          time.Time         `json:"ended_at,omitempty"`
+	Aborted          bool              `json:"aborted,omitempty"`
+	Source           SourceRef         `json:"source"`
+	UserPrompts      int               `json:"user_prompts,omitempty"`
+	UserPromptTimes  []time.Time       `json:"-"`
+	ModelTools       []ToolObservation `json:"model_tools,omitempty"`
+	RuntimeTools     []ToolObservation `json:"runtime_tools,omitempty"`
+	SkillEvidence    []SkillEvidence   `json:"skill_evidence,omitempty"`
+	TokenUsage       *TokenUsage       `json:"token_usage,omitempty"`
+	TokenUsageEvents []TokenUsageEvent `json:"-"`
+}
+
+func (turn *Turn) AddTokenUsage(value TokenUsage) {
+	if turn.TokenUsage == nil {
+		turn.TokenUsage = &TokenUsage{}
+	}
+	turn.TokenUsage.Add(value)
+}
+
+func (turn *Turn) AddTokenUsageAt(timestamp time.Time, value TokenUsage) {
+	turn.AddTokenUsage(value)
+	turn.TokenUsageEvents = append(turn.TokenUsageEvents, TokenUsageEvent{Timestamp: timestamp, Usage: value})
 }
 
 // ToolObservation is a model or runtime observation of one tool invocation.

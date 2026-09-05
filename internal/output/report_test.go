@@ -19,9 +19,136 @@ import (
 func sampleReport() aggregate.Report {
 	stamp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	return aggregate.Report{
-		Overview: aggregate.Overview{Sessions: 12_345, UserPrompts: 234, ToolCalls: 56_789, SkillUses: 42},
+		Overview: aggregate.Overview{Sessions: 12_345, Turns: 678, UserPrompts: 234, ToolCalls: 56_789, SkillUsesTurn: 42, SkillUsesSession: 24, TokenUsage: usage.TokenUsage{InputTokens: 100_000, CachedInputTokens: 80_000, CacheWriteInputTokens: 2_000, OutputTokens: 3_000, ReasoningOutputTokens: 1_000, TotalTokens: 103_000}},
 		Tools:    []aggregate.ToolRow{{Name: "shell", Calls: 56_789, Failures: 2, LastUsed: stamp}},
 		Skills:   []aggregate.SkillRow{{Name: "very-long-skill-name-日本語", Explicit: 2, Implicit: 1, Unknown: 1, Confirmed: 2, Inferred: 1, Unconfirmed: 0, Total: 3, LastUsed: stamp}},
+	}
+}
+
+func TestRenderStatsIncludesTokenUsage(t *testing.T) {
+	got := RenderHuman("stats", ReportContext{Agent: "codex", Period: "all time"}, sampleReport(), TerminalCapabilities{Width: 80, ColorMode: ColorNever})
+	for _, want := range []string{"Activity", "Skill Usage", "Token Usage", "Input Tokens", "Cached Tokens", "Cache Write Input Tokens", "Output Tokens", "Reasoning Tokens", "Total Tokens", "103K"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stats report does not contain %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderStatsUsesHierarchicalCompactTokenUsage(t *testing.T) {
+	report := sampleReport()
+	report.Overview.TokenUsage = usage.TokenUsage{
+		InputTokens:           3_131_307_608,
+		CachedInputTokens:     3_015_789_184,
+		OutputTokens:          13_311_725,
+		ReasoningOutputTokens: 6_386_854,
+		TotalTokens:           3_148_297_818,
+	}
+	report.Overview.TokenUsageAvailable = true
+	got := RenderHuman("stats", ReportContext{Agent: "codex", Period: "all time"}, report, TerminalCapabilities{Width: 80, ColorMode: ColorNever})
+	lines := strings.Split(got, "\n")
+	wants := []struct {
+		prefix string
+		value  string
+	}{
+		{prefix: "  Total Tokens", value: "3.15B"},
+		{prefix: "    Input Tokens", value: "3.13B"},
+		{prefix: "      Cached Tokens", value: "3.02B"},
+		{prefix: "    Output Tokens", value: "13.3M"},
+		{prefix: "      Reasoning Tokens", value: "6.39M"},
+	}
+	previous := -1
+	for _, want := range wants {
+		found := -1
+		for i, line := range lines {
+			if strings.HasPrefix(line, want.prefix) && strings.HasSuffix(strings.TrimSpace(line), want.value) {
+				found = i
+				break
+			}
+		}
+		if found <= previous {
+			t.Fatalf("token metric %q = %q is out of order or missing:\n%s", want.prefix, want.value, got)
+		}
+		previous = found
+	}
+	if strings.Contains(got, "Cache Write Input Tokens") {
+		t.Fatalf("zero cache-write usage should be omitted from human report:\n%s", got)
+	}
+}
+
+func TestRenderStatsAlignsMetricValuesWithinSections(t *testing.T) {
+	got := RenderHuman("stats", ReportContext{Agent: "codex", Period: "all time"}, sampleReport(), TerminalCapabilities{Width: 80, ColorMode: ColorNever})
+	groups := [][]struct {
+		label string
+		value string
+	}{
+		{
+			{label: "Sessions", value: "12,345"},
+			{label: "Turns", value: "678"},
+			{label: "User Prompts", value: "234"},
+			{label: "Tool Calls", value: "56,789"},
+		},
+		{
+			{label: "Total Tokens", value: "103K"},
+			{label: "Input Tokens", value: "100K"},
+			{label: "Cached Tokens", value: "80K"},
+			{label: "Cache Write Input Tokens", value: "2K"},
+			{label: "Output Tokens", value: "3K"},
+			{label: "Reasoning Tokens", value: "1K"},
+		},
+	}
+	for _, metrics := range groups {
+		valueEnd := -1
+		for _, metric := range metrics {
+			line := ""
+			for _, candidate := range strings.Split(got, "\n") {
+				if strings.Contains(candidate, metric.label) && strings.HasSuffix(strings.TrimSpace(candidate), metric.value) {
+					line = candidate
+					break
+				}
+			}
+			if line == "" {
+				t.Fatalf("metric %q is missing:\n%s", metric.label, got)
+			}
+			column := strings.LastIndex(line, metric.value)
+			if valueEnd == -1 {
+				valueEnd = column + len(metric.value)
+			} else if column+len(metric.value) != valueEnd {
+				t.Fatalf("metric %q value ends at column %d, want %d: %q", metric.label, column+len(metric.value), valueEnd, line)
+			}
+		}
+	}
+}
+
+func TestFormatCompactCount64(t *testing.T) {
+	tests := []struct {
+		value int64
+		want  string
+	}{
+		{value: 999, want: "999"},
+		{value: 1_000, want: "1K"},
+		{value: 12_345, want: "12.3K"},
+		{value: 999_499, want: "999K"},
+		{value: 999_500, want: "1M"},
+		{value: 1_000_000, want: "1M"},
+		{value: 1_234_567, want: "1.23M"},
+		{value: 3_148_297_818, want: "3.15B"},
+	}
+	for _, tt := range tests {
+		if got := formatCompactCount64(tt.value); got != tt.want {
+			t.Errorf("formatCompactCount64(%d) = %q, want %q", tt.value, got, tt.want)
+		}
+	}
+}
+
+func TestRenderStatsMarksUnavailableTokenUsage(t *testing.T) {
+	got := RenderHuman("stats", ReportContext{Source: usage.SourceCtx, Agent: "codex", Period: "all time"}, aggregate.Report{
+		Overview: aggregate.Overview{Sessions: 1, Turns: 1},
+	}, TerminalCapabilities{Width: 80, ColorMode: ColorNever})
+	if !strings.Contains(got, "Token Usage") || !strings.Contains(got, "not available") {
+		t.Fatalf("stats report does not explain unavailable token usage:\n%s", got)
+	}
+	if strings.Contains(got, "Input Tokens") {
+		t.Fatalf("stats report renders unavailable token fields as zero:\n%s", got)
 	}
 }
 
@@ -40,6 +167,27 @@ func TestRenderHumanPlainReportIsReadable(t *testing.T) {
 	}
 	if strings.Contains(got, "\x1b[") {
 		t.Fatalf("plain report contains ANSI: %q", got)
+	}
+}
+
+func TestRenderHumanShowsPeriodInfo(t *testing.T) {
+	ctx := ReportContext{
+		Agent:      "codex",
+		Period:     "2026-02-01 to 2026-09-05",
+		PeriodInfo: "selected period starts before the first usage record (2026-02-01)",
+	}
+	got := RenderHuman("stats", ctx, sampleReport(), TerminalCapabilities{Width: 120, ColorMode: ColorNever})
+	if !strings.Contains(got, "info: selected period starts before the first usage record (2026-02-01)") {
+		t.Fatalf("report does not contain period info:\n%s", got)
+	}
+	infoIndex := strings.Index(got, "info: selected period starts before the first usage record (2026-02-01)")
+	tokenIndex := strings.Index(got, "Reasoning Tokens")
+	if tokenIndex < 0 || infoIndex <= tokenIndex {
+		t.Fatalf("period info is not grouped at the end of the report:\n%s", got)
+	}
+	colored := RenderHuman("stats", ctx, sampleReport(), TerminalCapabilities{Width: 120, ColorMode: ColorAlways})
+	if !strings.Contains(colored, "\x1b[2minfo: selected period starts before the first usage record (2026-02-01)\x1b[m") {
+		t.Fatalf("period info is not styled like diagnostic info:\n%q", colored)
 	}
 }
 
@@ -85,6 +233,34 @@ func TestRenderJSONAddsSourceAndAgentsButKeepsLegacyAgent(t *testing.T) {
 	if value.Source != "ctx" || !reflect.DeepEqual(value.Agents, []string{"codex", "opencode"}) || value.Agent != "codex,opencode" {
 		t.Fatalf("source metadata = %#v", value)
 	}
+
+	data, err = RenderJSON("stats", ctx, sampleReport())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stats struct {
+		Turns            int   `json:"turns"`
+		SkillUsesTurn    int   `json:"skill_uses_turn"`
+		SkillUsesSession int   `json:"skill_uses_session"`
+		TokenAvailable   bool  `json:"token_usage_available"`
+		InputTokens      int64 `json:"input_tokens"`
+		TotalTokens      int64 `json:"total_tokens"`
+	}
+	if err := json.Unmarshal(data, &stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Turns != 678 || stats.SkillUsesTurn != 42 || stats.SkillUsesSession != 24 || !stats.TokenAvailable || stats.InputTokens != 100_000 || stats.TotalTokens != 103_000 {
+		t.Fatalf("stats fields = %#v", stats)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for _, removed := range []string{"skill_uses", "group_by"} {
+		if _, ok := fields[removed]; ok {
+			t.Fatalf("stats JSON retains removed field %q: %s", removed, data)
+		}
+	}
 }
 
 func TestRenderHumanUsesContentHeadingAndMultilineContext(t *testing.T) {
@@ -93,8 +269,9 @@ func TestRenderHumanUsesContentHeadingAndMultilineContext(t *testing.T) {
 	tests := []struct {
 		kind string
 		want []string
+		omit []string
 	}{
-		{kind: "stats", want: []string{"USAGE OVERVIEW", "Source: Codex (~/.codex)", "Agents: Codex", "Period: last 7 days", "Skill grouping: session"}},
+		{kind: "stats", want: []string{"USAGE OVERVIEW", "Source: Codex (~/.codex)", "Agents: Codex", "Period: last 7 days"}, omit: []string{"Skill grouping:"}},
 		{kind: "tools", want: []string{"TOOL USAGE", "Source: Codex (~/.codex)", "Agents: Codex", "Period: last 7 days", "Layer: runtime"}},
 		{kind: "skills", want: []string{"SKILL USAGE", "Source: Codex (~/.codex)", "Agents: Codex", "Period: last 7 days", "Group by: session", "Strict: true"}},
 	}
@@ -110,6 +287,11 @@ func TestRenderHumanUsesContentHeadingAndMultilineContext(t *testing.T) {
 			}
 			if strings.Contains(got, " · ") {
 				t.Fatalf("context uses a middle-dot separator: %q", got)
+			}
+			for _, omit := range tt.omit {
+				if strings.Contains(got, omit) {
+					t.Fatalf("report contains removed %q: %q", omit, got)
+				}
 			}
 		})
 	}
@@ -157,7 +339,7 @@ func TestRenderHumanKeepsRequiredFieldsAtSupportedWidths(t *testing.T) {
 		kind     string
 		required []string
 	}{
-		{kind: "stats", required: []string{"USAGE OVERVIEW", "Source: Codex (~/.codex)", "Agents: Codex", "Period: last 30 days", "Sessions"}},
+		{kind: "stats", required: []string{"USAGE OVERVIEW", "Source: Codex (~/.codex)", "Agents: Codex", "Period: last 30 days", "Activity", "Sessions", "Turns", "Skill Usage", "By turn", "By session", "Token Usage"}},
 		{kind: "tools", required: []string{"TOOL USAGE", "Source: Codex (~/.codex)", "Agents: Codex", "Period: last 30 days", "Tool", "Calls"}},
 		{kind: "skills", required: []string{"SKILL USAGE", "Source: Codex (~/.codex)", "Agents: Codex", "Period: last 30 days", "Skill", "Total"}},
 	}
@@ -182,27 +364,55 @@ func TestRenderHumanKeepsRequiredFieldsAtSupportedWidths(t *testing.T) {
 }
 
 func TestRenderHumanEmptyStateExplainsNoUsage(t *testing.T) {
-	ctx := ReportContext{Agent: "codex", Period: "last 1 day", Layer: usage.LayerEffective}
+	ctx := ReportContext{Agent: "codex", Period: "no data", Layer: usage.LayerEffective}
 
 	stats := RenderHuman("stats", ctx, aggregate.Report{}, TerminalCapabilities{Width: 80, ColorMode: ColorNever})
-	for _, want := range []string{"USAGE OVERVIEW", "Source: Codex (~/.codex)", "Agents: Codex", "No usage found for the selected period."} {
+	for _, want := range []string{"USAGE OVERVIEW", "Source: Codex (~/.codex)", "Agents: Codex", "info: No usage found for the selected period."} {
 		if !strings.Contains(stats, want) {
 			t.Errorf("empty stats does not contain %q:\n%s", want, stats)
 		}
 	}
+	infoIndex := strings.Index(stats, "info: No usage found for the selected period.")
+	statusIndex := strings.Index(stats, "Status not available")
+	if infoIndex <= statusIndex {
+		t.Fatalf("empty stats info is not grouped at the end of the report:\n%s", stats)
+	}
 
 	tools := RenderHuman("tools", ctx, aggregate.Report{}, TerminalCapabilities{Width: 80, ColorMode: ColorNever})
-	for _, want := range []string{"No tool usage found for the selected period and layer.", "0 tools, 0 calls total"} {
+	for _, want := range []string{"info: No tool usage found for the selected period and layer.", "0 tools, 0 calls total"} {
 		if !strings.Contains(tools, want) {
 			t.Errorf("empty tools does not contain %q:\n%s", want, tools)
 		}
 	}
+	toolInfoIndex := strings.Index(tools, "info: No tool usage found for the selected period and layer.")
+	toolFooterIndex := strings.Index(tools, "0 tools, 0 calls total")
+	if toolInfoIndex <= toolFooterIndex {
+		t.Fatalf("empty tools info is not grouped after the footer:\n%s", tools)
+	}
 
 	skills := RenderHuman("skills", ctx, aggregate.Report{}, TerminalCapabilities{Width: 80, ColorMode: ColorNever})
-	for _, want := range []string{"No skill usage found for the selected period and filter.", "0 skills, 0 uses total"} {
+	for _, want := range []string{"info: No skill usage found for the selected period and filter.", "0 skills, 0 uses total"} {
 		if !strings.Contains(skills, want) {
 			t.Errorf("empty skills does not contain %q:\n%s", want, skills)
 		}
+	}
+	skillInfoIndex := strings.Index(skills, "info: No skill usage found for the selected period and filter.")
+	skillFooterIndex := strings.Index(skills, "0 skills, 0 uses total")
+	if skillInfoIndex <= skillFooterIndex {
+		t.Fatalf("empty skills info is not grouped after the footer:\n%s", skills)
+	}
+}
+
+func TestRenderHumanKeepsInfoMessagesAdjacent(t *testing.T) {
+	ctx := ReportContext{
+		Agent:      "codex",
+		Period:     "2026-02-01 to 2026-09-05",
+		PeriodInfo: "selected period starts before the first usage record (2026-02-01)",
+	}
+	got := RenderHuman("stats", ctx, aggregate.Report{}, TerminalCapabilities{Width: 80, ColorMode: ColorNever})
+	want := "info: selected period starts before the first usage record (2026-02-01)\ninfo: No usage found for the selected period."
+	if !strings.Contains(got, want) {
+		t.Fatalf("info messages are not adjacent at the end of the report:\n%s", got)
 	}
 }
 
@@ -429,6 +639,7 @@ func TestDiagnosticPrefixUsesSemanticColor(t *testing.T) {
 		{name: "warning", level: "warning", capabilities: TerminalCapabilities{ColorMode: ColorAlways}, want: "\x1b[1;93mwarning:\x1b[m"},
 		{name: "error", level: "error", capabilities: TerminalCapabilities{ColorMode: ColorAlways}, want: "\x1b[1;91merror:\x1b[m"},
 		{name: "info", level: "info", capabilities: TerminalCapabilities{ColorMode: ColorAlways}, want: "\x1b[2minfo:\x1b[m"},
+		{name: "debug", level: "debug", capabilities: TerminalCapabilities{ColorMode: ColorAlways}, want: "\x1b[2mdebug:\x1b[m"},
 		{name: "never", level: "warning", capabilities: TerminalCapabilities{ColorMode: ColorNever}, want: "warning:"},
 	}
 
@@ -441,13 +652,24 @@ func TestDiagnosticPrefixUsesSemanticColor(t *testing.T) {
 	}
 }
 
-func TestDiagnosticMessageFaintsInformationalText(t *testing.T) {
+func TestDiagnosticMessageFaintsInformationalAndDebugText(t *testing.T) {
 	capabilities := TerminalCapabilities{ColorMode: ColorAlways}
 	if got := DiagnosticMessage("info", "history input was partially skipped", capabilities); got != "\x1b[2mhistory input was partially skipped\x1b[m" {
 		t.Fatalf("informational message = %q", got)
 	}
+	if got := DiagnosticMessage("debug", "cache lookup is in progress", capabilities); got != "\x1b[2mcache lookup is in progress\x1b[m" {
+		t.Fatalf("debug message = %q", got)
+	}
 	if got := DiagnosticMessage("warning", "history input was partially skipped", capabilities); got != "history input was partially skipped" {
 		t.Fatalf("warning message was unexpectedly styled: %q", got)
+	}
+}
+
+func TestRenderHumanFaintsInformationalEmptyState(t *testing.T) {
+	ctx := ReportContext{Agent: "codex", Period: "no data"}
+	got := RenderHuman("stats", ctx, aggregate.Report{}, TerminalCapabilities{Width: 80, ColorMode: ColorAlways})
+	if !strings.Contains(got, "\x1b[2minfo: No usage found for the selected period.\x1b[m") {
+		t.Fatalf("empty-state info is not styled like diagnostic info:\n%q", got)
 	}
 }
 

@@ -97,6 +97,7 @@ type ReportContext struct {
 	Agents         []string
 	Agent          string
 	Period         string
+	PeriodInfo     string
 	Layer          usage.ToolLayer
 	SkillGroupBy   aggregate.SkillGroupBy
 	SkillView      SkillView
@@ -218,19 +219,38 @@ func RenderHuman(kind string, ctx ReportContext, report aggregate.Report, capabi
 	}
 	lines := []string{styleHeading(heading, styled)}
 	lines = append(lines, contextLines(kind, ctx, effectiveSkillUsageView, styled)...)
+	infoMessages := reportInfoMessages(kind, ctx, report)
 	switch kind {
 	case "stats":
-		lines = append(lines, "", renderStats(report.Overview, width, styled))
+		lines = append(lines, "", renderStats(report.Overview, styled))
 	case "tools":
-		lines = append(lines, "", renderTools(report.Tools, ctx, width, styled), "", styleFooter(toolFooter(report.Tools), styled))
+		lines = append(lines, "")
+		if body := renderTools(report.Tools, ctx, width, styled); body != "" {
+			lines = append(lines, body, "")
+		}
+		lines = append(lines, styleFooter(toolFooter(report.Tools), styled))
 	case "skills":
 		if ctx.SkillView == SkillViewUnused {
-			lines = append(lines, "", renderUnusedSkills(report.UnusedSkills, report.InstalledSkills, width, styled), "", styleFooter(unusedSkillFooter(report.UnusedSkills, report.InstalledSkills), styled))
+			lines = append(lines, "")
+			if body := renderUnusedSkills(report.UnusedSkills, report.InstalledSkills, width, styled); body != "" {
+				lines = append(lines, body, "")
+			}
+			lines = append(lines, styleFooter(unusedSkillFooter(report.UnusedSkills, report.InstalledSkills), styled))
 		} else {
-			lines = append(lines, "", renderSkills(report.Skills, ctx, effectiveSkillUsageView, width, styled), "", styleFooter(skillFooter(report.Skills), styled))
+			lines = append(lines, "")
+			if body := renderSkills(report.Skills, ctx, effectiveSkillUsageView, width, styled); body != "" {
+				lines = append(lines, body, "")
+			}
+			lines = append(lines, styleFooter(skillFooter(report.Skills), styled))
 		}
 	default:
 		return ""
+	}
+	if len(infoMessages) > 0 {
+		lines = append(lines, "")
+		for _, message := range infoMessages {
+			lines = append(lines, styleInfo("info: "+message, styled))
+		}
 	}
 	return strings.TrimRight(strings.Join(lines, "\n"), "\n") + "\n"
 }
@@ -277,14 +297,34 @@ func contextLines(kind string, ctx ReportContext, effectiveSkillUsageView SkillU
 		parts = append(parts, "Group by: "+string(contextSkillGroupBy(ctx)))
 		parts = append(parts, "Strict: "+strconv.FormatBool(ctx.Strict))
 		parts = append(parts, "View: "+skillUsageViewLabel(ctx.SkillUsageView, effectiveSkillUsageView))
-	case "stats":
-		parts = append(parts, "Skill grouping: "+string(contextSkillGroupBy(ctx)))
 	}
-	lines := make([]string, len(parts))
-	for i, part := range parts {
-		lines[i] = styleContext(part, styled)
+	lines := make([]string, 0, len(parts))
+	for _, part := range parts {
+		lines = append(lines, styleContext(part, styled))
 	}
 	return lines
+}
+
+func reportInfoMessages(kind string, ctx ReportContext, report aggregate.Report) []string {
+	messages := make([]string, 0, 2)
+	if periodInfo := strings.TrimSpace(ctx.PeriodInfo); periodInfo != "" {
+		messages = append(messages, periodInfo)
+	}
+	switch kind {
+	case "stats":
+		if overviewIsEmpty(report.Overview) {
+			messages = append(messages, "No usage found for the selected period.")
+		}
+	case "tools":
+		if len(report.Tools) == 0 {
+			messages = append(messages, "No tool usage found for the selected period and layer.")
+		}
+	case "skills":
+		if ctx.SkillView != SkillViewUnused && len(report.Skills) == 0 {
+			messages = append(messages, "No skill usage found for the selected period and filter.")
+		}
+	}
+	return messages
 }
 
 func contextSkillGroupBy(ctx ReportContext) aggregate.SkillGroupBy {
@@ -304,46 +344,93 @@ func skillUsageViewLabel(requested, effective SkillUsageView) string {
 	return string(effective)
 }
 
-func renderStats(summary aggregate.Overview, width int, styled bool) string {
-	items := []string{
-		metric("Sessions", summary.Sessions, styled),
-		metric("User Prompts", summary.UserPrompts, styled),
-		metric("Tool Calls", summary.ToolCalls, styled),
-		metric("Skill Uses", summary.SkillUses, styled),
+type statMetric struct {
+	label  string
+	value  string
+	indent int
+}
+
+type statSection struct {
+	title   string
+	metrics []statMetric
+}
+
+func renderStats(summary aggregate.Overview, styled bool) string {
+	sections := []statSection{
+		{title: "Activity", metrics: []statMetric{
+			{label: "Sessions", value: formatCount(summary.Sessions)},
+			{label: "Turns", value: formatCount(summary.Turns)},
+			{label: "User Prompts", value: formatCount(summary.UserPrompts)},
+			{label: "Tool Calls", value: formatCount(summary.ToolCalls)},
+		}},
+		{title: "Skill Usage", metrics: []statMetric{
+			{label: "By turn", value: formatCount(summary.SkillUsesTurn)},
+			{label: "By session", value: formatCount(summary.SkillUsesSession)},
+		}},
+		{title: "Token Usage", metrics: tokenMetrics(summary)},
 	}
-	max := 0
-	for _, item := range items {
-		if w := lipgloss.Width(item); w > max {
-			max = w
+	lines := renderStatSections(sections, styled)
+	return strings.Join(lines, "\n")
+}
+
+func tokenMetrics(summary aggregate.Overview) []statMetric {
+	if !summary.TokenUsageAvailable && summary.TokenUsage == (usage.TokenUsage{}) {
+		return []statMetric{{label: "Status", value: "not available"}}
+	}
+	metrics := []statMetric{
+		{label: "Total Tokens", value: formatCompactCount64(summary.TokenUsage.TotalTokens)},
+		{label: "Input Tokens", value: formatCompactCount64(summary.TokenUsage.InputTokens), indent: 1},
+		{label: "Cached Tokens", value: formatCompactCount64(summary.TokenUsage.CachedInputTokens), indent: 2},
+	}
+	if summary.TokenUsage.CacheWriteInputTokens != 0 {
+		metrics = append(metrics, statMetric{label: "Cache Write Input Tokens", value: formatCompactCount64(summary.TokenUsage.CacheWriteInputTokens), indent: 2})
+	}
+	metrics = append(metrics,
+		statMetric{label: "Output Tokens", value: formatCompactCount64(summary.TokenUsage.OutputTokens), indent: 1},
+		statMetric{label: "Reasoning Tokens", value: formatCompactCount64(summary.TokenUsage.ReasoningOutputTokens), indent: 2},
+	)
+	return metrics
+}
+
+func renderStatSections(sections []statSection, styled bool) []string {
+	lines := make([]string, 0, len(sections)*2)
+	for sectionIndex, section := range sections {
+		if sectionIndex > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, styleHeader(section.title, styled))
+		labelWidth, valueWidth := 0, 0
+		for _, metric := range section.metrics {
+			label := statMetricLabel(metric)
+			if width := lipgloss.Width(label); width > labelWidth {
+				labelWidth = width
+			}
+			if width := lipgloss.Width(metric.value); width > valueWidth {
+				valueWidth = width
+			}
+		}
+		for _, metric := range section.metrics {
+			value := metric.value
+			if styled {
+				value = lipgloss.NewStyle().Bold(true).Render(value)
+			}
+			lines = append(lines, "  "+padRight(styleLabel(statMetricLabel(metric), styled), labelWidth)+" "+padLeft(value, valueWidth))
 		}
 	}
-	if width < 70 || max*len(items)+2*(len(items)-1) > width {
-		return strings.Join(items, "\n") + "\n" + styleEmptyIfZero(summary, styled)
-	}
-	for i := range items {
-		items[i] = padRight(items[i], max)
-	}
-	return strings.Join(items, "  ") + "\n" + styleEmptyIfZero(summary, styled)
+	return lines
 }
 
-func styleEmptyIfZero(summary aggregate.Overview, styled bool) string {
-	if summary.Sessions == 0 && summary.UserPrompts == 0 && summary.ToolCalls == 0 && summary.SkillUses == 0 {
-		return styleNotice("No usage found for the selected period.", styled)
-	}
-	return ""
+func statMetricLabel(metric statMetric) string {
+	return strings.Repeat("  ", metric.indent) + metric.label
 }
 
-func metric(label string, value int, styled bool) string {
-	valueText := formatCount(value)
-	if styled {
-		valueText = lipgloss.NewStyle().Bold(true).Render(valueText)
-	}
-	return padRight(styleLabel(label, styled), 14) + " " + padLeft(valueText, 12)
+func overviewIsEmpty(summary aggregate.Overview) bool {
+	return summary.Sessions == 0 && summary.Turns == 0 && summary.UserPrompts == 0 && summary.ToolCalls == 0 && summary.SkillUsesTurn == 0 && summary.SkillUsesSession == 0 && summary.TokenUsage == (usage.TokenUsage{})
 }
 
 func renderTools(rows []aggregate.ToolRow, ctx ReportContext, width int, styled bool) string {
 	if len(rows) == 0 {
-		return styleNotice("No tool usage found for the selected period and layer.", styled)
+		return ""
 	}
 	compact := width < 70
 	standard := width < 100
@@ -395,7 +482,7 @@ func selectSkillUsageView(view SkillUsageView, rows []aggregate.SkillRow, width 
 
 func renderSkills(rows []aggregate.SkillRow, ctx ReportContext, view SkillUsageView, width int, styled bool) string {
 	if len(rows) == 0 {
-		return styleNotice("No skill usage found for the selected period and filter.", styled)
+		return ""
 	}
 	switch view {
 	case SkillUsageViewCompact:
@@ -735,14 +822,59 @@ func padLeft(value string, width int) string {
 }
 
 func formatCount(value int) string {
+	return formatCount64(int64(value))
+}
+
+func formatCount64(value int64) string {
 	if value < 0 {
-		return "-" + formatCount(-value)
+		return "-" + formatCount64(-value)
 	}
-	s := strconv.Itoa(value)
+	s := strconv.FormatInt(value, 10)
 	for i := len(s) - 3; i > 0; i -= 3 {
 		s = s[:i] + "," + s[i:]
 	}
 	return s
+}
+
+func formatCompactCount64(value int64) string {
+	if value < 0 {
+		return "-" + formatCompactCount64(-value)
+	}
+	units := []struct {
+		value  int64
+		suffix string
+	}{
+		{value: 1_000_000_000_000, suffix: "T"},
+		{value: 1_000_000_000, suffix: "B"},
+		{value: 1_000_000, suffix: "M"},
+		{value: 1_000, suffix: "K"},
+	}
+	unitIndex := -1
+	for i, unit := range units {
+		if value >= unit.value {
+			unitIndex = i
+			break
+		}
+	}
+	if unitIndex == -1 {
+		return formatCount64(value)
+	}
+	scaled := float64(value) / float64(units[unitIndex].value)
+	if scaled >= 999.5 && unitIndex > 0 {
+		unitIndex--
+		scaled = float64(value) / float64(units[unitIndex].value)
+	}
+	decimals := 0
+	if scaled < 10 {
+		decimals = 2
+	} else if scaled < 100 {
+		decimals = 1
+	}
+	formatted := strconv.FormatFloat(scaled, 'f', decimals, 64)
+	if strings.Contains(formatted, ".") {
+		formatted = strings.TrimRight(strings.TrimRight(formatted, "0"), ".")
+	}
+	return formatted + units[unitIndex].suffix
 }
 
 func formatLocalTime(value time.Time, location *time.Location) string {
@@ -766,6 +898,10 @@ func styleContext(value string, enabled bool) string {
 	return styleSecondary(value, enabled)
 }
 
+func styleInfo(value string, enabled bool) string {
+	return styleSecondary(value, enabled)
+}
+
 func styleHeading(value string, enabled bool) string {
 	if !enabled {
 		return value
@@ -786,19 +922,20 @@ func DiagnosticPrefix(level string, capabilities TerminalCapabilities) string {
 		color = "11"
 	case "error":
 		color = "9"
-	case "info":
-		return styleSecondary(label, true)
+	case "info", "debug":
+		return styleInfo(label, true)
 	default:
 		return label
 	}
 	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(color)).Render(label)
 }
 
-// DiagnosticMessage de-emphasizes informational diagnostics while leaving
-// warnings and errors readable at the default terminal emphasis.
+// DiagnosticMessage de-emphasizes informational and debug diagnostics while
+// leaving warnings and errors readable at the default terminal emphasis.
 func DiagnosticMessage(level, message string, capabilities TerminalCapabilities) string {
-	if strings.EqualFold(strings.TrimSuffix(strings.TrimSpace(level), ":"), "info") {
-		return styleSecondary(message, capabilities.ColorsEnabled())
+	level = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(level), ":"))
+	if level == "info" || level == "debug" {
+		return styleInfo(message, capabilities.ColorsEnabled())
 	}
 	return message
 }
@@ -894,18 +1031,26 @@ func RenderJSON(kind string, ctx ReportContext, report aggregate.Report) ([]byte
 	switch kind {
 	case "stats":
 		value := struct {
-			SchemaVersion int      `json:"schema_version"`
-			Agent         string   `json:"agent"`
-			Source        string   `json:"source"`
-			Agents        []string `json:"agents"`
-			Period        string   `json:"period"`
-			GeneratedAt   string   `json:"generated_at"`
-			Sessions      int      `json:"sessions"`
-			UserPrompts   int      `json:"user_prompts"`
-			ToolCalls     int      `json:"tool_calls"`
-			SkillUses     int      `json:"skill_uses"`
-			GroupBy       string   `json:"group_by"`
-		}{base.SchemaVersion, base.Agent, base.Source, base.Agents, base.Period, formatMachineTime(ctx.ReferenceTime), report.Overview.Sessions, report.Overview.UserPrompts, report.Overview.ToolCalls, report.Overview.SkillUses, string(contextSkillGroupBy(ctx))}
+			SchemaVersion         int      `json:"schema_version"`
+			Agent                 string   `json:"agent"`
+			Source                string   `json:"source"`
+			Agents                []string `json:"agents"`
+			Period                string   `json:"period"`
+			GeneratedAt           string   `json:"generated_at"`
+			Sessions              int      `json:"sessions"`
+			Turns                 int      `json:"turns"`
+			UserPrompts           int      `json:"user_prompts"`
+			ToolCalls             int      `json:"tool_calls"`
+			SkillUsesTurn         int      `json:"skill_uses_turn"`
+			SkillUsesSession      int      `json:"skill_uses_session"`
+			TokenUsageAvailable   bool     `json:"token_usage_available"`
+			InputTokens           int64    `json:"input_tokens"`
+			CachedInputTokens     int64    `json:"cached_input_tokens"`
+			CacheWriteInputTokens int64    `json:"cache_write_input_tokens"`
+			OutputTokens          int64    `json:"output_tokens"`
+			ReasoningOutputTokens int64    `json:"reasoning_output_tokens"`
+			TotalTokens           int64    `json:"total_tokens"`
+		}{base.SchemaVersion, base.Agent, base.Source, base.Agents, base.Period, formatMachineTime(ctx.ReferenceTime), report.Overview.Sessions, report.Overview.Turns, report.Overview.UserPrompts, report.Overview.ToolCalls, report.Overview.SkillUsesTurn, report.Overview.SkillUsesSession, report.Overview.TokenUsageAvailable || report.Overview.TokenUsage != (usage.TokenUsage{}), report.Overview.TokenUsage.InputTokens, report.Overview.TokenUsage.CachedInputTokens, report.Overview.TokenUsage.CacheWriteInputTokens, report.Overview.TokenUsage.OutputTokens, report.Overview.TokenUsage.ReasoningOutputTokens, report.Overview.TokenUsage.TotalTokens}
 		return json.MarshalIndent(value, "", "  ")
 	case "tools":
 		rows := make([]toolJSON, 0, len(report.Tools))

@@ -188,6 +188,79 @@ func TestLoadForwardsMillisecondAlignedTimeRange(t *testing.T) {
 	}
 }
 
+func TestLoadForwardsDateRange(t *testing.T) {
+	var args []string
+	runner := func(value []string) (CommandResult, error) {
+		args = append([]string(nil), value...)
+		return CommandResult{Stdout: []byte(completionLine(t, "generation-1", "", true) + "\n")}, nil
+	}
+	from := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 1, 4, 0, 0, 0, 0, time.UTC)
+	if _, err := Load("/tmp/ctx", IngestOptions{From: from, To: to, Now: time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC), Runner: runner}); err != nil {
+		t.Fatal(err)
+	}
+	if !containsPair(args, "--since", "2026-01-02T00:00:00Z") || !containsPair(args, "--until", "2026-01-04T00:00:00Z") {
+		t.Fatalf("date range args = %#v", args)
+	}
+}
+
+func TestLoadForwardsNowAsUpperBoundForOpenEndedFrom(t *testing.T) {
+	var args []string
+	now := time.Date(2026, 1, 10, 12, 34, 56, 789000000, time.UTC)
+	runner := func(value []string) (CommandResult, error) {
+		args = append([]string(nil), value...)
+		return CommandResult{Stdout: []byte(completionLine(t, "generation-1", "", true) + "\n")}, nil
+	}
+	from := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	if _, err := Load("/tmp/ctx", IngestOptions{From: from, Now: now, Runner: runner}); err != nil {
+		t.Fatal(err)
+	}
+	if !containsPair(args, "--since", "2026-01-02T00:00:00Z") || !containsPair(args, "--until", "2026-01-10T12:34:56.789Z") {
+		t.Fatalf("open-ended from args = %#v", args)
+	}
+}
+
+func TestLoadKeepsOpenEndedToAsLocalFilter(t *testing.T) {
+	var args []string
+	runner := func(value []string) (CommandResult, error) {
+		args = append([]string(nil), value...)
+		return CommandResult{Stdout: []byte(completionLine(t, "generation-1", "", true) + "\n")}, nil
+	}
+	to := time.Date(2026, 1, 4, 0, 0, 0, 0, time.UTC)
+	if _, err := Load("/tmp/ctx", IngestOptions{To: to, Now: time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC), Runner: runner}); err != nil {
+		t.Fatal(err)
+	}
+	for _, arg := range args {
+		if arg == "--since" || arg == "--until" {
+			t.Fatalf("open-ended to args = %#v", args)
+		}
+	}
+}
+
+func TestLoadFiltersDateRange(t *testing.T) {
+	data := strings.Join([]string{
+		eventLine(t, "old", "codex", "old", "message", "user", "2026-01-01T23:59:59Z", "old", nil),
+		eventLine(t, "selected", "codex", "selected", "message", "user", "2026-01-02T12:00:00Z", "selected", nil),
+		eventLine(t, "new", "codex", "new", "message", "user", "2026-01-03T00:00:00Z", "new", nil),
+		completionLine(t, "generation-1", "", true),
+	}, "\n") + "\n"
+	runner := func([]string) (CommandResult, error) {
+		return CommandResult{Stdout: []byte(data)}, nil
+	}
+	result, err := Load("/tmp/ctx", IngestOptions{
+		From:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		To:     time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC),
+		Now:    time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC),
+		Runner: runner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Turns) != 1 || result.Turns[0].UserPrompts != 1 || result.Turns[0].Source.ProviderSessionID != "selected" || len(result.Sessions) != 1 {
+		t.Fatalf("date range result = %#v", result)
+	}
+}
+
 func TestLoadRejectsUnchangedCursor(t *testing.T) {
 	data := completionLine(t, "generation-1", "cursor-1", false) + "\n"
 	runner := func([]string) (CommandResult, error) {

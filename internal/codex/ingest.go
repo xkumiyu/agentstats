@@ -20,7 +20,7 @@ import (
 
 const DefaultMaxLineBytes = 4 << 20
 
-const codexParserVersion = "codex-normalizer-v1"
+const codexParserVersion = "codex-normalizer-v2"
 
 // ResolveHome applies the Codex home precedence rule.
 func ResolveHome(explicit string) (string, error) {
@@ -273,7 +273,10 @@ func (c *WarningCollector) Warnings() []usage.Warning {
 	return result
 }
 
-type TimestampFilter struct{ cutoff time.Time }
+type TimestampFilter struct {
+	cutoff time.Time
+	until  time.Time
+}
 
 func NewTimestampFilter(days int, now time.Time) (TimestampFilter, error) {
 	if days <= 0 {
@@ -285,16 +288,48 @@ func NewTimestampFilter(days int, now time.Time) (TimestampFilter, error) {
 	return TimestampFilter{cutoff: now.Add(-time.Duration(days) * 24 * time.Hour)}, nil
 }
 
+func NewDateRangeFilter(from, to time.Time) (TimestampFilter, error) {
+	if !from.IsZero() && !to.IsZero() && !from.Before(to) {
+		return TimestampFilter{}, errors.New("from must be before to")
+	}
+	return TimestampFilter{cutoff: from, until: to}, nil
+}
+
+func filterForOptions(options IngestOptions) (TimestampFilter, error) {
+	hasDays := options.DaysSet || options.Days != 0
+	hasRange := !options.From.IsZero() || !options.To.IsZero()
+	if hasDays && hasRange {
+		return TimestampFilter{}, errors.New("days cannot be combined with from or to")
+	}
+	if hasDays {
+		return NewTimestampFilter(options.Days, options.Now)
+	}
+	if hasRange {
+		return NewDateRangeFilter(options.From, options.To)
+	}
+	return TimestampFilter{}, nil
+}
+
 func (f TimestampFilter) Accept(timestamp time.Time) bool {
-	return f.cutoff.IsZero() || (!timestamp.IsZero() && !timestamp.Before(f.cutoff))
+	if f.cutoff.IsZero() && f.until.IsZero() {
+		return true
+	}
+	if timestamp.IsZero() || (!f.cutoff.IsZero() && timestamp.Before(f.cutoff)) {
+		return false
+	}
+	return f.until.IsZero() || timestamp.Before(f.until)
 }
 
 func (f TimestampFilter) Cutoff() time.Time { return f.cutoff }
+
+func (f TimestampFilter) Active() bool { return !f.cutoff.IsZero() || !f.until.IsZero() }
 
 type IngestOptions struct {
 	MaxLineBytes int
 	Days         int
 	DaysSet      bool
+	From         time.Time
+	To           time.Time
 	Now          time.Time
 	CacheDir     string
 }
@@ -319,26 +354,36 @@ func Stream(home string, opts IngestOptions, consume func(usage.Turn)) (sessions
 	if consume == nil {
 		consume = func(usage.Turn) {}
 	}
-	filter := TimestampFilter{}
-	if opts.DaysSet || opts.Days != 0 {
-		filter, err = NewTimestampFilter(opts.Days, opts.Now)
-		if err != nil {
-			return nil, nil, err
-		}
+	filter, err := filterForOptions(opts)
+	if err != nil {
+		return nil, nil, err
 	}
 	files, err := Discover(home)
 	if err != nil {
 		return nil, nil, err
 	}
 	collector := &WarningCollector{}
-	a := newAssembler(filter, collector, consume)
+	var selectedSessionIDs map[string]struct{}
+	if filter.Active() {
+		selectedSessionIDs = make(map[string]struct{})
+	}
+	a := newAssembler(filter, collector, func(turn usage.Turn) {
+		if selectedSessionIDs != nil {
+			selectedSessionIDs[turn.SessionID] = struct{}{}
+		}
+		consume(turn)
+	})
 	for _, path := range files {
 		if err := DecodeFile(path, DecodeOptions{MaxLineBytes: opts.MaxLineBytes, Warnings: collector}, a.consume); err != nil {
 			collector.AddFile("read_file", path)
 		}
 	}
 	a.flush()
-	return a.sessions(), collector.Warnings(), nil
+	sessions = a.sessions()
+	if selectedSessionIDs != nil {
+		sessions = filterCodexSessions(sessions, selectedSessionIDs)
+	}
+	return sessions, collector.Warnings(), nil
 }
 
 // Load is the collecting convenience wrapper around Stream.
@@ -356,13 +401,9 @@ func Load(home string, opts IngestOptions) (IngestResult, error) {
 }
 
 func loadCached(home string, opts IngestOptions) (IngestResult, error) {
-	filter := TimestampFilter{}
-	var err error
-	if opts.DaysSet || opts.Days != 0 {
-		filter, err = NewTimestampFilter(opts.Days, opts.Now)
-		if err != nil {
-			return IngestResult{}, err
-		}
+	filter, err := filterForOptions(opts)
+	if err != nil {
+		return IngestResult{}, err
 	}
 	files, err := Discover(home)
 	if err != nil {
@@ -404,14 +445,21 @@ func loadCached(home string, opts IngestOptions) (IngestResult, error) {
 		}
 		warnings = append(warnings, fileResult.Warnings...)
 	}
-	if !filter.cutoff.IsZero() {
+	if filter.Active() {
 		filtered := turns[:0]
+		selectedSessionIDs := make(map[string]struct{})
 		for _, turn := range turns {
 			if filteredTurn, ok := filterCodexTurn(turn, filter); ok {
 				filtered = append(filtered, filteredTurn)
+				selectedSessionIDs[turn.SessionID] = struct{}{}
 			}
 		}
 		turns = filtered
+		for id := range sessions {
+			if _, ok := selectedSessionIDs[id]; !ok {
+				delete(sessions, id)
+			}
+		}
 	}
 	sessionIDs := make([]string, 0, len(sessions))
 	for id := range sessions {
@@ -423,6 +471,16 @@ func loadCached(home string, opts IngestOptions) (IngestResult, error) {
 		resultSessions = append(resultSessions, sessions[id])
 	}
 	return IngestResult{Turns: turns, Sessions: resultSessions, Warnings: warnings}, nil
+}
+
+func filterCodexSessions(sessions []SessionMetadata, selected map[string]struct{}) []SessionMetadata {
+	filtered := sessions[:0]
+	for _, session := range sessions {
+		if _, ok := selected[session.ID]; ok {
+			filtered = append(filtered, session)
+		}
+	}
+	return filtered
 }
 
 func filterCodexTurn(turn usage.Turn, filter TimestampFilter) (usage.Turn, bool) {
@@ -446,6 +504,16 @@ func filterCodexTurn(turn usage.Turn, filter TimestampFilter) (usage.Turn, bool)
 	filtered.ModelTools = filterCodexTools(turn.ModelTools, filter)
 	filtered.RuntimeTools = filterCodexTools(turn.RuntimeTools, filter)
 	filtered.SkillEvidence = filterCodexSkills(turn.SkillEvidence, filter)
+	if len(turn.TokenUsageEvents) > 0 {
+		filtered.TokenUsage = nil
+		filtered.TokenUsageEvents = nil
+		for _, event := range turn.TokenUsageEvents {
+			if !filter.Accept(event.Timestamp) {
+				continue
+			}
+			filtered.AddTokenUsageAt(event.Timestamp, event.Usage)
+		}
+	}
 	return filtered, true
 }
 
@@ -515,14 +583,15 @@ func fileRevision(info os.FileInfo) string {
 }
 
 type assembler struct {
-	filter    TimestampFilter
-	warnings  *WarningCollector
-	out       func(usage.Turn)
-	current   map[string]*turnState
-	ordinals  map[string]int
-	metadata  map[string]SessionMetadata
-	pathToSID map[string]string
-	versions  map[string]string
+	filter               TimestampFilter
+	warnings             *WarningCollector
+	out                  func(usage.Turn)
+	current              map[string]*turnState
+	ordinals             map[string]int
+	metadata             map[string]SessionMetadata
+	pathToSID            map[string]string
+	versions             map[string]string
+	cumulativeTokenUsage map[string]usage.TokenUsage
 }
 
 type turnState struct {
@@ -532,7 +601,7 @@ type turnState struct {
 }
 
 func newAssembler(filter TimestampFilter, warnings *WarningCollector, out func(usage.Turn)) *assembler {
-	return &assembler{filter: filter, warnings: warnings, out: out, current: make(map[string]*turnState), ordinals: make(map[string]int), metadata: make(map[string]SessionMetadata), pathToSID: make(map[string]string), versions: make(map[string]string)}
+	return &assembler{filter: filter, warnings: warnings, out: out, current: make(map[string]*turnState), ordinals: make(map[string]int), metadata: make(map[string]SessionMetadata), pathToSID: make(map[string]string), versions: make(map[string]string), cumulativeTokenUsage: make(map[string]usage.TokenUsage)}
 }
 
 func (a *assembler) consume(env Envelope) {
@@ -737,6 +806,19 @@ func (a *assembler) observe(cur *turnState, env Envelope, payload map[string]any
 	if nested, ok := payload["item"].(map[string]any); ok {
 		item = nested
 	}
+	if env.Type == "event_msg" && sameRecordType(firstString(payload, "type", "event_type"), "token_count") {
+		if tokenUsage, ok, cumulative := parseTokenUsage(payload); ok {
+			if cumulative {
+				current := tokenUsage
+				if previous, exists := a.cumulativeTokenUsage[cur.turn.SessionID]; exists {
+					tokenUsage = tokenUsageDelta(current, previous)
+				}
+				a.cumulativeTokenUsage[cur.turn.SessionID] = current
+			}
+			cur.turn.AddTokenUsageAt(env.Timestamp, tokenUsage)
+		}
+		return
+	}
 	if env.Type == "response_item" || env.Type == "response" {
 		if obs, ok := usage.NormalizeModelCall(cur.turn.SessionID, cur.turn.ID, item, env.Timestamp, env.Source); ok {
 			cur.turn.ModelTools = append(cur.turn.ModelTools, obs)
@@ -768,6 +850,79 @@ func (a *assembler) observe(cur *turnState, env Envelope, payload map[string]any
 		} else {
 			cur.turn.SkillEvidence = append(cur.turn.SkillEvidence, usage.DetectInjectedSkillsWithMode(text, cur.turn.SessionID, cur.turn.ID, usage.ModeUnknown, env.Timestamp, env.Source)...)
 		}
+	}
+}
+
+func parseTokenUsage(payload map[string]any) (usage.TokenUsage, bool, bool) {
+	info, _ := payload["info"].(map[string]any)
+	last, _ := info["last_token_usage"].(map[string]any)
+	if len(last) == 0 {
+		last, _ = payload["last_token_usage"].(map[string]any)
+	}
+	if len(last) == 0 {
+		last, _ = info["usage"].(map[string]any)
+	}
+	if len(last) == 0 {
+		last, _ = info["total_token_usage"].(map[string]any)
+		if len(last) == 0 {
+			last, _ = payload["total_token_usage"].(map[string]any)
+		}
+		if len(last) == 0 {
+			return usage.TokenUsage{}, false, false
+		}
+		return tokenUsageFromMap(last), true, true
+	}
+	return tokenUsageFromMap(last), true, false
+}
+
+func tokenUsageFromMap(value map[string]any) usage.TokenUsage {
+	return usage.TokenUsage{
+		InputTokens:           integerValue(value, "input_tokens"),
+		CachedInputTokens:     integerValue(value, "cached_input_tokens"),
+		CacheWriteInputTokens: integerValue(value, "cache_write_input_tokens"),
+		OutputTokens:          integerValue(value, "output_tokens"),
+		ReasoningOutputTokens: integerValue(value, "reasoning_output_tokens"),
+		TotalTokens:           integerValue(value, "total_tokens"),
+	}
+}
+
+func tokenUsageDelta(current, previous usage.TokenUsage) usage.TokenUsage {
+	return usage.TokenUsage{
+		InputTokens:           nonNegativeDelta(current.InputTokens, previous.InputTokens),
+		CachedInputTokens:     nonNegativeDelta(current.CachedInputTokens, previous.CachedInputTokens),
+		CacheWriteInputTokens: nonNegativeDelta(current.CacheWriteInputTokens, previous.CacheWriteInputTokens),
+		OutputTokens:          nonNegativeDelta(current.OutputTokens, previous.OutputTokens),
+		ReasoningOutputTokens: nonNegativeDelta(current.ReasoningOutputTokens, previous.ReasoningOutputTokens),
+		TotalTokens:           nonNegativeDelta(current.TotalTokens, previous.TotalTokens),
+	}
+}
+
+func nonNegativeDelta(current, previous int64) int64 {
+	if current < previous {
+		return current
+	}
+	return current - previous
+}
+
+func integerValue(value map[string]any, key string) int64 {
+	raw, ok := value[key]
+	if !ok {
+		return 0
+	}
+	switch typed := raw.(type) {
+	case float64:
+		return int64(typed)
+	case float32:
+		return int64(typed)
+	case int:
+		return int64(typed)
+	case int64:
+		return typed
+	case json.Number:
+		parsed, _ := typed.Int64()
+		return parsed
+	default:
+		return 0
 	}
 }
 

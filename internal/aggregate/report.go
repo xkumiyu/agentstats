@@ -30,10 +30,14 @@ func (groupBy SkillGroupBy) Valid() bool {
 }
 
 type Overview struct {
-	Sessions    int
-	UserPrompts int
-	ToolCalls   int
-	SkillUses   int
+	Sessions            int
+	Turns               int
+	UserPrompts         int
+	ToolCalls           int
+	SkillUsesTurn       int
+	SkillUsesSession    int
+	TokenUsage          usage.TokenUsage
+	TokenUsageAvailable bool
 }
 
 type ToolRow struct {
@@ -67,22 +71,22 @@ type Report struct {
 
 // BuildOverview computes all aggregate views from normalized turns. The
 // effective view is used for overview Tool Calls, while model/runtime rows are
-// retained for the tools command.
+// retained for the tools command. Skill uses are counted both per turn and per
+// session so the stats command can report both units together.
 func BuildOverview(input Input) Report {
-	return BuildOverviewBy(input, SkillGroupByTurn)
-}
-
-// BuildOverviewBy computes the overview using the requested Skill grouping.
-// Tool and prompt counts are unaffected by the grouping unit.
-func BuildOverviewBy(input Input, groupBy SkillGroupBy) Report {
 	result := Report{Warnings: append([]usage.Warning(nil), input.Warnings...)}
 	sessions := make(map[string]struct{})
 	allSkills := make([]usage.SkillEvidence, 0)
 	for _, turn := range input.Turns {
+		result.Overview.Turns++
 		if turn.SessionID != "" {
 			sessions[turn.SessionID] = struct{}{}
 		}
 		result.Overview.UserPrompts += turn.UserPrompts
+		if turn.TokenUsage != nil {
+			result.Overview.TokenUsageAvailable = true
+			result.Overview.TokenUsage.Add(*turn.TokenUsage)
+		}
 		effective := usage.EffectiveTools(turn)
 		result.Overview.ToolCalls += len(effective)
 		allSkills = append(allSkills, turn.SkillEvidence...)
@@ -91,8 +95,9 @@ func BuildOverviewBy(input Input, groupBy SkillGroupBy) Report {
 	if result.Overview.Sessions == 0 {
 		result.Overview.Sessions = len(sessions)
 	}
-	uses := groupSkillUses(usage.MergeSkillEvidence(allSkills), groupBy)
-	result.Overview.SkillUses = len(uses)
+	uses := usage.MergeSkillEvidence(allSkills)
+	result.Overview.SkillUsesTurn = len(uses)
+	result.Overview.SkillUsesSession = len(groupSkillUses(uses, SkillGroupBySession))
 	result.Tools = aggregateTools(input.Turns, usage.LayerEffective)
 	result.Skills = aggregateSkills(uses, false)
 	return result

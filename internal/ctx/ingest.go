@@ -41,9 +41,13 @@ type IngestOptions struct {
 	DataRoot string
 	Days     int
 	DaysSet  bool
+	From     time.Time
+	To       time.Time
 	Now      time.Time
 	Runner   CommandRunner
 	CacheDir string
+	// Diagnostic receives optional verbose cache and source status messages.
+	Diagnostic func(string)
 }
 
 type IngestResult struct {
@@ -103,7 +107,14 @@ func Load(dataRoot string, options IngestOptions) (IngestResult, error) {
 	if strings.TrimSpace(options.CacheDir) != "" {
 		return loadCached(options, runner)
 	}
+	options.diagnostic("ctx cache: disabled; reading source")
 	return load(options, runner)
+}
+
+func (options IngestOptions) diagnostic(message string) {
+	if options.Diagnostic != nil {
+		options.Diagnostic(message)
+	}
 }
 
 func load(options IngestOptions, runner CommandRunner) (IngestResult, error) {
@@ -116,12 +127,9 @@ func loadStream(options IngestOptions, runner CommandRunner, includeRange bool) 
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	var cutoff time.Time
-	if options.DaysSet || options.Days != 0 {
-		if options.Days <= 0 {
-			return IngestResult{}, "", errors.New("days must be at least 1")
-		}
-		cutoff = now.Add(-time.Duration(options.Days) * 24 * time.Hour)
+	cutoff, until, err := timeBounds(options, now)
+	if err != nil {
+		return IngestResult{}, "", err
 	}
 	assembler := newAssembler(nil)
 	seenEvents := make(map[string]struct{})
@@ -138,7 +146,7 @@ func loadStream(options IngestOptions, runner CommandRunner, includeRange bool) 
 			return IngestResult{}, "", commandError(result, fmt.Errorf("exit code %d", result.ExitCode))
 		}
 		current, err := parseCommandPage(result, func(item event) {
-			if includeRange && !accept(item.Timestamp, cutoff, now) {
+			if includeRange && !accept(item.Timestamp, cutoff, until) {
 				return
 			}
 			if item.ID != "" {
@@ -183,10 +191,17 @@ func eventQueryArgs(options IngestOptions, now time.Time, limit int, includeRang
 	if strings.TrimSpace(options.DataRoot) != "" {
 		args = append(args, "--data-root", options.DataRoot)
 	}
-	if includeRange && (options.DaysSet || options.Days != 0) {
-		cutoff := now.Add(-time.Duration(options.Days) * 24 * time.Hour)
-		args = append(args, "--since", cutoff.UTC().Truncate(time.Millisecond).Format(time.RFC3339Nano))
-		args = append(args, "--until", now.UTC().Truncate(time.Millisecond).Format(time.RFC3339Nano))
+	if includeRange && hasTimeRange(options) {
+		cutoff, until, _ := timeBounds(options, now)
+		// ctx requires --since and --until as a pair. An open-ended --from
+		// ends at now; an open-ended --to remains a local filter.
+		if until.IsZero() && !cutoff.IsZero() {
+			until = now
+		}
+		if !cutoff.IsZero() && !until.IsZero() {
+			args = append(args, "--since", cutoff.UTC().Truncate(time.Millisecond).Format(time.RFC3339Nano))
+			args = append(args, "--until", until.UTC().Truncate(time.Millisecond).Format(time.RFC3339Nano))
+		}
 	}
 	if cursor != "" {
 		args = append(args, "--cursor", cursor)
@@ -195,42 +210,58 @@ func eventQueryArgs(options IngestOptions, now time.Time, limit int, includeRang
 }
 
 func loadCached(options IngestOptions, runner CommandRunner) (IngestResult, error) {
-	if (options.DaysSet || options.Days != 0) && options.Days <= 0 {
-		return IngestResult{}, errors.New("days must be at least 1")
-	}
 	now := options.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	if _, _, err := timeBounds(options, now); err != nil {
+		return IngestResult{}, err
+	}
 	scope := canonicalDataRoot(options.DataRoot)
 	store := cache.New(options.CacheDir)
-	generation, _ := probeGeneration(options, runner, now)
+	options.diagnostic("ctx cache: checking generation")
+	generation, probeErr := probeGeneration(options, runner, now)
 	if generation != "" {
 		data, hit, _ := store.Read("ctx", scope, generation, ctxParserVersion)
 		if hit {
 			var snapshot cache.Snapshot
 			if err := json.Unmarshal(data, &snapshot); err == nil {
+				if hasTimeRange(options) {
+					options.diagnostic("ctx cache: hit; applying selected period locally")
+				} else {
+					options.diagnostic("ctx cache: hit; using complete cached history")
+				}
 				return filterCachedResult(resultFromSnapshot(snapshot), options, now), nil
 			}
 		}
 	}
-	if options.DaysSet || options.Days != 0 {
-		// A range query remains bounded for a first --days invocation. Its
-		// result is intentionally not published as a complete generation cache.
-		result, _, err := loadStream(options, runner, true)
-		return result, err
+	if probeErr != nil {
+		options.diagnostic("ctx cache: generation check unavailable; reading source")
+	} else {
+		options.diagnostic("ctx cache: miss; reading source")
 	}
 	fullOptions := options
 	fullOptions.Days = 0
 	fullOptions.DaysSet = false
+	if hasTimeRange(options) {
+		options.diagnostic("ctx source: reading full event stream to populate complete cache")
+	} else {
+		options.diagnostic("ctx source: reading full event stream")
+	}
 	result, fullGeneration, err := loadStream(fullOptions, runner, false)
 	if err != nil {
 		return IngestResult{}, err
 	}
 	if fullGeneration != "" {
-		_ = store.Write("ctx", scope, fullGeneration, ctxParserVersion, snapshotFromResult(result))
+		if err := store.Write("ctx", scope, fullGeneration, ctxParserVersion, snapshotFromResult(result)); err != nil {
+			options.diagnostic("ctx cache: could not store complete generation; result is still available")
+		} else {
+			options.diagnostic("ctx cache: stored complete generation")
+		}
+	} else {
+		options.diagnostic("ctx cache: source returned no generation; result is still available")
 	}
-	return result, nil
+	return filterCachedResult(result, options, now), nil
 }
 
 func probeGeneration(options IngestOptions, runner CommandRunner, now time.Time) (string, error) {
@@ -291,16 +322,16 @@ func resultFromSnapshot(snapshot cache.Snapshot) IngestResult {
 }
 
 func filterCachedResult(result IngestResult, options IngestOptions, now time.Time) IngestResult {
-	if !options.DaysSet && options.Days == 0 {
+	if !hasTimeRange(options) {
 		return result
 	}
-	cutoff := now.Add(-time.Duration(options.Days) * 24 * time.Hour)
+	cutoff, until, _ := timeBounds(options, now)
 	filtered := result
 	filtered.Turns = nil
 	selectedSessions := make(map[string]struct{})
 	selectedAgents := make(map[string]struct{})
 	for _, turn := range result.Turns {
-		filteredTurn, ok := filterCtxTurn(turn, cutoff, now)
+		filteredTurn, ok := filterCtxTurn(turn, cutoff, until)
 		if !ok {
 			continue
 		}
@@ -538,6 +569,28 @@ func eventTimestamp(raw map[string]any) (time.Time, bool) {
 		return time.UnixMilli(int64(value)), false
 	}
 	return time.Time{}, false
+}
+
+func hasTimeRange(options IngestOptions) bool {
+	return options.DaysSet || options.Days != 0 || !options.From.IsZero() || !options.To.IsZero()
+}
+
+func timeBounds(options IngestOptions, now time.Time) (time.Time, time.Time, error) {
+	hasDays := options.DaysSet || options.Days != 0
+	hasRange := !options.From.IsZero() || !options.To.IsZero()
+	if hasDays && hasRange {
+		return time.Time{}, time.Time{}, errors.New("days cannot be combined with from or to")
+	}
+	if hasDays {
+		if options.Days <= 0 {
+			return time.Time{}, time.Time{}, errors.New("days must be at least 1")
+		}
+		return now.Add(-time.Duration(options.Days) * 24 * time.Hour), now, nil
+	}
+	if !options.From.IsZero() && !options.To.IsZero() && !options.From.Before(options.To) {
+		return time.Time{}, time.Time{}, errors.New("from must be before to")
+	}
+	return options.From, options.To, nil
 }
 
 func accept(timestamp, cutoff, until time.Time) bool {

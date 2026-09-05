@@ -45,11 +45,12 @@ Show an overview of agent usage.
 Options:
   --source SOURCE   codex or ctx (default: codex)
   --days N          Include the last N days (N >= 1; default: all time)
+  --from DATE       Include records on or after DATE (YYYY-MM-DD)
+  --to DATE         Include records before the day after DATE (YYYY-MM-DD)
   --codex-home PATH Override CODEX_HOME for this invocation (default: CODEX_HOME or ~/.codex)
   --ctx-data-root PATH Read a specific ctx data root (default: ctx default)
   --color MODE      auto, always, or never (default: auto; human report only)
-  --group-by UNIT   turn or session (default: turn)
-  --verbose         Show input diagnostic details
+  --verbose         Show input and cache diagnostic details
   --strict-input    Exit non-zero when input records are skipped
   --json            Emit JSON
   --help            Show this help
@@ -62,11 +63,13 @@ Show tool usage by canonical name.
 Options:
   --source SOURCE   codex or ctx (default: codex)
   --days N          Include the last N days (N >= 1; default: all time)
+  --from DATE       Include records on or after DATE (YYYY-MM-DD)
+  --to DATE         Include records before the day after DATE (YYYY-MM-DD)
   --codex-home PATH Override CODEX_HOME for this invocation (default: CODEX_HOME or ~/.codex)
   --ctx-data-root PATH Read a specific ctx data root (default: ctx default)
   --color MODE      auto, always, or never (default: auto; human report only)
   --layer LAYER     effective, runtime, or model (default: effective)
-  --verbose         Show input diagnostic details
+  --verbose         Show input and cache diagnostic details
   --strict-input    Exit non-zero when input records are skipped
   --json            Emit JSON
   --help            Show this help
@@ -79,6 +82,8 @@ Show skill usage and evidence state.
 Options:
   --source SOURCE   codex or ctx (default: codex)
   --days N          Include the last N days (N >= 1; default: all time)
+  --from DATE       Include records on or after DATE (YYYY-MM-DD)
+  --to DATE         Include records before the day after DATE (YYYY-MM-DD)
   --codex-home PATH Override CODEX_HOME for this invocation (default: CODEX_HOME or ~/.codex)
   --ctx-data-root PATH Read a specific ctx data root (default: ctx default)
   --color MODE      auto, always, or never (default: auto; human report only)
@@ -87,11 +92,13 @@ Options:
   --view VIEW       auto, compact, mode, state, or all (default: auto; human report only)
   --unused          Show installed skills with no recorded usage
   --root PATH       Scan a skill root (repeatable; only with --unused; default if omitted: ~/.agents/skills)
-  --verbose         Show input diagnostic details
+  --verbose         Show input and cache diagnostic details
   --strict-input    Exit non-zero when input records are skipped
   --json            Emit JSON
   --help            Show this help
 `
+
+const dateLayout = "2006-01-02"
 
 func commandUsage(kind string) string {
 	switch kind {
@@ -113,6 +120,98 @@ func hasOption(args []string, option string) bool {
 		}
 	}
 	return false
+}
+
+func parseDateOption(name, value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, fmt.Errorf("%s must be a date in YYYY-MM-DD format", name)
+	}
+	parsed, err := time.ParseInLocation(dateLayout, value, time.UTC)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%s must be a date in YYYY-MM-DD format", name)
+	}
+	return parsed, nil
+}
+
+func periodBounds(turns []usage.Turn) (from, to time.Time) {
+	add := func(timestamp time.Time) {
+		if timestamp.IsZero() {
+			return
+		}
+		if from.IsZero() || timestamp.Before(from) {
+			from = timestamp
+		}
+		if to.IsZero() || timestamp.After(to) {
+			to = timestamp
+		}
+	}
+	for _, turn := range turns {
+		add(turn.StartedAt)
+		add(turn.EndedAt)
+		for _, timestamp := range turn.UserPromptTimes {
+			add(timestamp)
+		}
+		for _, tool := range turn.ModelTools {
+			add(tool.Timestamp)
+		}
+		for _, tool := range turn.RuntimeTools {
+			add(tool.Timestamp)
+		}
+		for _, skill := range turn.SkillEvidence {
+			add(skill.Timestamp)
+		}
+		for _, event := range turn.TokenUsageEvents {
+			add(event.Timestamp)
+		}
+	}
+	return from, to
+}
+
+func formatPeriod(turns []usage.Turn) string {
+	from, to := periodBounds(turns)
+	if from.IsZero() {
+		return "no data"
+	}
+	return from.UTC().Format(dateLayout) + " to " + to.UTC().Format(dateLayout)
+}
+
+func formatPeriodInfo(turns []usage.Turn, daysSet bool, days int, from, to, now time.Time) string {
+	if !daysSet && from.IsZero() && to.IsZero() {
+		return ""
+	}
+	actualFrom, actualTo := periodBounds(turns)
+	if actualFrom.IsZero() {
+		return ""
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	requestedFrom, requestedTo := from, to
+	if daysSet {
+		requestedFrom = now.Add(-time.Duration(days) * 24 * time.Hour)
+		requestedTo = now
+	} else if requestedTo.IsZero() {
+		requestedTo = now
+	} else {
+		requestedTo = requestedTo.AddDate(0, 0, -1)
+	}
+	var messages []string
+	if !requestedFrom.IsZero() && dateBefore(requestedFrom, actualFrom) {
+		messages = append(messages, fmt.Sprintf("selected period starts before the first usage record (%s)", actualFrom.UTC().Format(dateLayout)))
+	}
+	if !requestedTo.IsZero() && dateBefore(actualTo, requestedTo) {
+		messages = append(messages, fmt.Sprintf("selected period ends after the last usage record (%s)", actualTo.UTC().Format(dateLayout)))
+	}
+	return strings.Join(messages, "; ")
+}
+
+func dateBefore(left, right time.Time) bool {
+	left = left.UTC()
+	right = right.UTC()
+	left = time.Date(left.Year(), left.Month(), left.Day(), 0, 0, 0, 0, time.UTC)
+	right = time.Date(right.Year(), right.Month(), right.Day(), 0, 0, 0, 0, time.UTC)
+	return left.Before(right)
 }
 
 type stringList []string
@@ -180,23 +279,32 @@ func runWithCtxLoader(args []string, stdout, stderr io.Writer, loadCtx ctxHistor
 		diagnostics.errorf("--version is a top-level option; use agentstats --version")
 		return 2
 	}
+	if kind != "skills" && hasOption(args[1:], "--group-by") {
+		diagnostics.errorf("--group-by is only valid for skills")
+		return 2
+	}
 
 	flags := flag.NewFlagSet(kind, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = func() { _, _ = fmt.Fprint(stderr, commandUsage(kind)) }
 	source := flags.String("source", string(usage.SourceCodex), "history source")
 	days := flags.Int("days", 0, "include the last N days")
+	from := flags.String("from", "", "include records on or after date")
+	to := flags.String("to", "", "include records through date")
 	codexHome := flags.String("codex-home", "", "override CODEX_HOME for this invocation")
 	ctxDataRoot := flags.String("ctx-data-root", "", "ctx data root path")
 	color := flags.String("color", string(output.ColorAuto), "human report color mode")
 	layer := flags.String("layer", string(usage.LayerEffective), "tool layer")
-	groupBy := flags.String("group-by", string(aggregate.SkillGroupByTurn), "skill aggregation unit")
+	var groupBy *string
+	if kind == "skills" {
+		groupBy = flags.String("group-by", string(aggregate.SkillGroupByTurn), "skill aggregation unit")
+	}
 	strict := flags.Bool("strict", false, "count confirmed skills only")
 	view := flags.String("view", string(output.SkillUsageViewAuto), "skill report view")
 	unused := flags.Bool("unused", false, "show installed skills with no recorded usage")
 	var roots stringList
 	flags.Var(&roots, "root", "scan a skill root (repeatable; only with --unused)")
-	verbose := flags.Bool("verbose", false, "show input diagnostic details")
+	verbose := flags.Bool("verbose", false, "show input and cache diagnostic details")
 	strictInput := flags.Bool("strict-input", false, "exit non-zero when input records are skipped")
 	jsonOutput := flags.Bool("json", false, "emit JSON")
 	if err := flags.Parse(args[1:]); err != nil {
@@ -250,14 +358,13 @@ func runWithCtxLoader(args []string, stdout, stderr io.Writer, loadCtx ctxHistor
 		diagnostics.errorf("--layer is only valid for tools")
 		return 2
 	}
-	selectedGroupBy := aggregate.SkillGroupBy(*groupBy)
-	if !selectedGroupBy.Valid() {
-		diagnostics.errorf("invalid --group-by %q (want turn or session)", *groupBy)
-		return 2
-	}
-	if kind == "tools" && selectedGroupBy != aggregate.SkillGroupByTurn {
-		diagnostics.errorf("--group-by is only valid for stats or skills")
-		return 2
+	selectedGroupBy := aggregate.SkillGroupByTurn
+	if groupBy != nil {
+		selectedGroupBy = aggregate.SkillGroupBy(*groupBy)
+		if !selectedGroupBy.Valid() {
+			diagnostics.errorf("invalid --group-by %q (want turn or session)", *groupBy)
+			return 2
+		}
 	}
 	if kind != "skills" && *strict {
 		diagnostics.errorf("--strict is only valid for skills")
@@ -289,19 +396,51 @@ func runWithCtxLoader(args []string, stdout, stderr io.Writer, loadCtx ctxHistor
 		return 2
 	}
 	daysSet := false
+	fromSet := false
+	toSet := false
 	flags.Visit(func(f *flag.Flag) {
-		if f.Name == "days" {
+		switch f.Name {
+		case "days":
 			daysSet = true
+		case "from":
+			fromSet = true
+		case "to":
+			toSet = true
 		}
 	})
 	if daysSet && *days == 0 {
 		diagnostics.errorf("--days must be at least 1")
 		return 2
 	}
+	if daysSet && (fromSet || toSet) {
+		diagnostics.errorf("--days cannot be combined with --from or --to")
+		return 2
+	}
+	var fromDate, toDate time.Time
+	if fromSet {
+		var err error
+		fromDate, err = parseDateOption("--from", *from)
+		if err != nil {
+			diagnostics.errorf("%v", err)
+			return 2
+		}
+	}
+	if toSet {
+		date, err := parseDateOption("--to", *to)
+		if err != nil {
+			diagnostics.errorf("%v", err)
+			return 2
+		}
+		toDate = date.AddDate(0, 0, 1)
+	}
+	if !fromDate.IsZero() && !toDate.IsZero() && !fromDate.Before(toDate) {
+		diagnostics.errorf("--from must not be after --to")
+		return 2
+	}
 
 	now := time.Now().UTC()
 	cacheDir, _ := cache.DefaultDir()
-	progress := newSpinner(stderr, !*jsonOutput && diagnostics.capabilities.IsTTY, diagnostics.capabilities.ColorsEnabled())
+	progress := newSpinner(stderr, !*jsonOutput && !*verbose && diagnostics.capabilities.IsTTY, diagnostics.capabilities.ColorsEnabled())
 	var (
 		turns        []usage.Turn
 		sessionCount int
@@ -313,7 +452,13 @@ func runWithCtxLoader(args []string, stdout, stderr io.Writer, loadCtx ctxHistor
 	if selectedSource == usage.SourceCtx {
 		sourcePath = strings.TrimSpace(*ctxDataRoot)
 		stopProgress = progress.Start("Reading ctx history")
-		input, loadErr := loadCtx(*ctxDataRoot, ctxsource.IngestOptions{DataRoot: *ctxDataRoot, Days: *days, DaysSet: daysSet, Now: now, CacheDir: cacheDir})
+		ctxOptions := ctxsource.IngestOptions{DataRoot: *ctxDataRoot, Days: *days, DaysSet: daysSet, From: fromDate, To: toDate, Now: now, CacheDir: cacheDir}
+		if *verbose {
+			ctxOptions.Diagnostic = func(message string) {
+				diagnostics.write("debug", message)
+			}
+		}
+		input, loadErr := loadCtx(*ctxDataRoot, ctxOptions)
 		if loadErr != nil {
 			stopProgress()
 			diagnostics.errorf("read ctx history: %v", loadErr)
@@ -328,7 +473,7 @@ func runWithCtxLoader(args []string, stdout, stderr io.Writer, loadCtx ctxHistor
 		}
 		sourcePath = home
 		stopProgress = progress.Start("Reading Codex history")
-		input, loadErr := codex.Load(home, codex.IngestOptions{Days: *days, DaysSet: daysSet, Now: now, CacheDir: cacheDir})
+		input, loadErr := codex.Load(home, codex.IngestOptions{Days: *days, DaysSet: daysSet, From: fromDate, To: toDate, Now: now, CacheDir: cacheDir})
 		if loadErr != nil {
 			stopProgress()
 			diagnostics.errorf("read Codex history %q: %v", home, loadErr)
@@ -367,7 +512,7 @@ func runWithCtxLoader(args []string, stdout, stderr io.Writer, loadCtx ctxHistor
 		warnings = report.Warnings
 		stopProgress()
 	} else {
-		report = aggregate.BuildOverviewBy(aggregateInput, selectedGroupBy)
+		report = aggregate.BuildOverview(aggregateInput)
 		if kind == "tools" {
 			report.Tools = aggregate.Tools(aggregateInput, selectedLayer)
 		}
@@ -376,11 +521,9 @@ func runWithCtxLoader(args []string, stdout, stderr io.Writer, loadCtx ctxHistor
 		}
 		stopProgress()
 	}
-	period := "all time"
-	if daysSet {
-		period = fmt.Sprintf("last %d days", *days)
-	}
-	context := output.ReportContext{Source: selectedSource, SourcePath: sourcePath, Agents: agents, Agent: legacyAgentValue(agents), Period: period, Layer: selectedLayer, SkillGroupBy: selectedGroupBy, SkillUsageView: selectedSkillUsageView, Strict: *strict, ReferenceTime: now, Location: time.Local}
+	period := formatPeriod(turns)
+	periodInfo := formatPeriodInfo(turns, daysSet, *days, fromDate, toDate, now)
+	context := output.ReportContext{Source: selectedSource, SourcePath: sourcePath, Agents: agents, Agent: legacyAgentValue(agents), Period: period, PeriodInfo: periodInfo, Layer: selectedLayer, SkillGroupBy: selectedGroupBy, SkillUsageView: selectedSkillUsageView, Strict: *strict, ReferenceTime: now, Location: time.Local}
 	if *unused {
 		context.SkillView = output.SkillViewUnused
 		context.SkillRoots = append([]string{}, inventorySnapshot.Roots...)
